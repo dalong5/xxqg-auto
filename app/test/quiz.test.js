@@ -15,7 +15,7 @@ mock.module('../src/xxqg/browser.js', { exports: {
 const { quiz } = await import('../src/xxqg/tasks.js');
 
 test('an incorrect answer can advance through its explanation to the next question', async () => {
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const browser = await chromium.launch({ channel: process.env.CHROME_CHANNEL || 'chrome', executablePath: process.env.CHROME_PATH || undefined, headless: true });
   try {
     page = await browser.newPage();
     await page.setContent(`<div class="my-points-card">每日答题 <button>去答题</button></div>

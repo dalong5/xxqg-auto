@@ -1,0 +1,10 @@
+services:
+  api:
+    ports: !override
+      - "127.0.0.1:8099:8099"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8099
+  worker:
+    environment:
+      INSTABOX_HEADLESS: "1"
