@@ -133,11 +133,26 @@ export async function hintText() {
 const clean = (s) => s.replace(/^[A-Za-z][.、]\s*/, '').replace(/\s+/g, '');
 
 // 用真实鼠标作答当前题并点确定：先点「查看提示」拿官方答案（.answer 里就是「正确答案：B」），再照着选 / 填
+export const TIP_JS =
+  "(function(){var e=document.querySelector('.q-footer-answer-tip-wrap .tips')||document.querySelector('.q-footer-answer-tip-wrap');if(!e){document.title='TIPNO';return}var d=devicePixelRatio;var oy=screenY*2+outerHeight*2-innerHeight*d;var ox=screenX*2+(outerWidth*2-innerWidth*d)/2;e.scrollIntoView({block:'center'});var r=e.getBoundingClientRect();document.title='TIP:'+JSON.stringify([Math.round(ox+(r.x+r.width/2)*d),Math.round(oy+(r.y+r.height/2)*d)])})()";
+
+// 「查看提示」按钮的屏幕坐标：先把它滚进视野再取矩形
+export async function tipRect() {
+  const raw = await probe(TIP_JS);
+  if (!raw.startsWith('TIP:')) return null;
+  try {
+    return JSON.parse(raw.slice(4));
+  } catch {
+    return null;
+  }
+}
+
 export async function advance() {
   let r = await rects();
   let hint = '';
-  if (r.tip) {
-    await clickAt(r.tip[0], r.tip[1]);
+  const tip = await tipRect();
+  if (tip) {
+    await clickAt(tip[0], tip[1]);
     for (let i = 0; i < 6 && !hint; i++) {
       await sleep(500);
       hint = await hintText();
