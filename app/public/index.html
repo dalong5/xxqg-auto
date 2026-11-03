@@ -41,6 +41,9 @@
   #log .ok { color:var(--grn); } #log .bad { color:#ff6b6b; } #log .step { color:var(--amb); } #log .dim { color:#6b7482; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   @media (max-width:760px){ .grid { grid-template-columns:1fr; } }
+#invite { margin: 10px 0; }
+.inv { display: flex; gap: 8px; margin-top: 6px; }
+.inv input { flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid #2a3550; background: #0f1523; color: #e6ecff; }
 </style>
 </head>
 <body>
@@ -57,10 +60,15 @@
   <section class="card">
     <h2>账号</h2>
     <div id="acct"><div class="hint">还没有绑定账号</div></div>
+    <div id="invite" hidden>
+      <div class="hint">这是私人站点，先填邀请码再登录（只验一次，存在你自己的 cookie 里）</div>
+      <div class="inv"><input id="code" placeholder="邀请码"><button class="primary" id="btnCode">进入</button></div>
+    </div>
     <div id="qrbox"><span class="hint">点下面按钮生成二维码</span></div>
     <div id="loginmsg" class="hint">用「学习强国」APP 扫码，扫完在手机上点确认，2 分钟内有效</div>
     <div class="actions">
       <button class="primary" id="btnLogin">生成登录二维码</button>
+    <button id="btnSched" hidden>设定每日自动跑</button>
       <button id="btnSync">查当前积分</button>
       <button id="btnDel" hidden>解绑账号</button>
     </div>
@@ -135,17 +143,48 @@ function renderAccount() {
   const s = user.last_score || { today: '-', total: '-' };
   const exp = user.expires_at ? new Date(user.expires_at).toLocaleDateString('zh-CN') : '未知';
   $('acct').innerHTML = `<div class="acct"><b>${user.nick || user.uid}</b>
-    <span class="hint">登录态有效至 ${exp}</span></div>
+    <span class="hint">登录态有效至 ${exp}${user.schedule ? ` · 每日 ${user.schedule} 自动跑` : ''}</span></div>
     <div class="scores"><div><b>${s.today ?? '-'}</b><span>今日得分</span></div>
     <div><b>${s.total ?? '-'}</b><span>总积分</span></div></div>`;
   $('btnDel').hidden = false;
   renderScore(s.tasks ? s : null);
 }
 
+let me = { approved: true };
+
+async function loadMe() {
+  me = await api('/api/me');
+  $('invite').hidden = !(me.needInvite && !me.approved);
+  $('btnLogin').disabled = !me.approved;
+  $('btnLogin').textContent = me.approved ? '生成登录二维码' : '先填邀请码';
+  $('btnSched').hidden = !me.approved || !user;
+}
+
+async function register() {
+  const code = $('code').value.trim();
+  if (!code) return log('先填邀请码', 'bad');
+  try {
+    await api('/api/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
+    log('邀请码通过', 'ok');
+    await loadMe();
+  } catch (e) { log(e.message, 'bad'); }
+}
+
+const hhmm = (uid) => {
+  const at = prompt('每天几点自动跑？格式 HH:mm（留空=取消）', user?.schedule || '07:30');
+  if (at === null) return;
+  api(`/api/users/${uid}/schedule`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ at: at.trim() }),
+  })
+    .then((d) => { user.schedule = d.at; log(d.at ? `已排期 ${d.at}，下次 ${new Date(d.nextAt).toLocaleString('zh-CN')}` : '已取消排期', 'ok'); })
+    .catch((e) => log(e.message, 'bad'));
+};
+
 async function load() {
   const users = await api('/api/users');
   user = users[0] || null;
   renderAccount();
+  await loadMe();
 }
 
 // ---------- SSE ----------
@@ -183,6 +222,8 @@ async function refresh() {
 }
 
 // ---------- 登录 ----------
+$('btnCode').onclick = register;
+$('btnSched').onclick = () => user && hhmm(user.uid);
 $('btnLogin').onclick = async () => {
   loginStream?.close();
   $('qrbox').innerHTML = '<span class="hint">生成中…</span>';

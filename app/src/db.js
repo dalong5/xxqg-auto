@@ -79,6 +79,21 @@ try {
   // 已存在
 }
 
+// 多人化：访客要邀请码才放行，额度可单独给
+for (const [table, ddl] of [
+  ['visitors', 'ALTER TABLE visitors ADD COLUMN approved INTEGER DEFAULT 0'],
+  ['visitors', 'ALTER TABLE visitors ADD COLUMN code TEXT'],
+  ['visitors', 'ALTER TABLE visitors ADD COLUMN max_accounts INTEGER DEFAULT 1'],
+  ['users', 'ALTER TABLE users ADD COLUMN schedule TEXT'],
+  ['users', 'ALTER TABLE users ADD COLUMN next_run_at INTEGER DEFAULT 0'],
+]) {
+  try {
+    db.exec(ddl);
+  } catch {
+    // 已存在
+  }
+}
+
 const now = () => Date.now();
 
 // ---------- 访客会话（多人同时用，各自只看自己的账号） ----------
@@ -131,6 +146,24 @@ export const listUsers = (visitorId) =>
     .all(visitorId);
 export const countUsers = (visitorId) =>
   db.prepare('SELECT COUNT(*) AS n FROM users WHERE visitor_id = ?').get(visitorId).n;
+
+export const getVisitor = (id) => db.prepare('SELECT * FROM visitors WHERE id = ?').get(id);
+
+/** 邀请码通过 = 放行，并记下用了哪个码 */
+export const approveVisitor = (id, code) =>
+  db.prepare('UPDATE visitors SET approved = 1, code = ? WHERE id = ?').run(code, id);
+
+export const setVisitorQuota = (id, n) =>
+  db.prepare('UPDATE visitors SET max_accounts = ? WHERE id = ?').run(n, id);
+
+export const setUserSchedule = (uid, at, nextRunAt) =>
+  db.prepare('UPDATE users SET schedule = ?, next_run_at = ? WHERE uid = ?').run(at, nextRunAt, uid);
+
+/** 到点该跑的账号（只挑有排期的） */
+export const dueSchedules = (t = Date.now()) =>
+  db
+    .prepare("SELECT uid FROM users WHERE next_run_at > 0 AND next_run_at <= ? AND schedule IS NOT NULL")
+    .all(t);
 
 const today = () => new Date().toISOString().slice(0, 10);
 

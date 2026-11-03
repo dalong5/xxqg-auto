@@ -47,4 +47,6 @@ export const config = {
   proxyHost: 'https://pc-proxy-api.xuexi.cn',
   loginHost: 'https://login.xuexi.cn',
   chromePath: process.env.CHROME_PATH || '',
+  // 邀请码：不配就谁都能用；配了就得先输对码才放行
+  inviteCode: process.env.INVITE_CODE || '',
 };

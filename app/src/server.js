@@ -21,20 +21,55 @@ app.use((req, res, next) => {
 });
 
 // ---------- 会话 ----------
+const visitorInfo = (req) => {
+  const v = db.getVisitor(req.visitor);
+  return {
+    approved: Boolean(v?.approved) || !config.inviteCode,
+    quota: v?.max_accounts ?? 1,
+    needInvite: Boolean(config.inviteCode),
+  };
+};
+
 app.get('/api/me', (req, res) => {
-  res.json({ visitor: req.visitor, accounts: db.countUsers(req.visitor), maxAccounts: config.maxAccounts });
+  const info = visitorInfo(req);
+  res.json({
+    visitor: req.visitor,
+    accounts: db.countUsers(req.visitor),
+    maxAccounts: info.quota,
+    approved: info.approved,
+    needInvite: info.needInvite,
+  });
 });
+
+// 邀请码放行（服务端没配 INVITE_CODE 就直接全放行）
+app.post('/api/register', (req, res) => {
+  if (!config.inviteCode) return res.json({ ok: true, approved: true });
+  const code = String(req.body?.code || '').trim();
+  if (code !== config.inviteCode) {
+    if (!rateLimit(`invite:${req.ip}`, 10, 60_000)) return res.status(429).json({ error: '试太多次了，等一分钟' });
+    return res.status(403).json({ error: '邀请码不对' });
+  }
+  db.approveVisitor(req.visitor, code);
+  res.json({ ok: true, approved: true });
+});
+
+// 没放行的访客挡住要花算力的接口
+const needApproved = (req, res, next) => {
+  if (visitorInfo(req).approved) return next();
+  res.status(403).json({ error: '需要邀请码', needInvite: true });
+};
 
 app.get('/healthz', (req, res) => {
   res.json({ ok: true, queued: db.queuedCount(), workers: db.liveWorkers(), at: Date.now() });
 });
 
 // ---------- 扫码登录 ----------
-app.post('/api/login/start', (req, res) => {
+app.post('/api/login/start', needApproved, (req, res) => {
   const ip = req.ip || 'x';
   if (!rateLimit(`ip:${ip}`, 12, 60_000)) return res.status(429).json({ error: '扫码太频繁，缓一分钟' });
-  if (db.countUsers(req.visitor) >= config.maxAccounts) {
-    return res.status(400).json({ error: `最多绑定 ${config.maxAccounts} 个账号` });
+  const quota = db.getVisitor(req.visitor)?.max_accounts ?? 1;
+  if (db.countUsers(req.visitor) >= quota) {
+    return res.status(400).json({ error: `最多绑定 ${quota} 个账号` });
   }
   const row = db.createLogin(req.visitor);
   res.json({ sid: row.sid });
@@ -114,6 +149,43 @@ app.post('/api/users/:uid/run', (req, res) => {
   const id = db.enqueue({ kind: 'run', uid: user.uid, visitorId: req.visitor, tasks });
   res.json({ jobId: id, tasks, queued: db.queuedCount() });
 });
+
+// 定时：每账号一个 HH:mm，到点自动跑全套
+app.post('/api/users/:uid/schedule', (req, res) => {
+  const user = ownUser(req, res);
+  if (!user) return;
+  const at = String(req.body?.at || '').trim();
+  if (!at) {
+    db.setUserSchedule(user.uid, null, 0);
+    return res.json({ ok: true, at: null });
+  }
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(at)) return res.status(400).json({ error: '时间要 HH:mm' });
+  const next = nextRunAt(at);
+  db.setUserSchedule(user.uid, at, next);
+  res.json({ ok: true, at, nextAt: next });
+});
+
+function nextRunAt(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const t = new Date();
+  t.setHours(h, m, 0, 0);
+  // 今天已过就排到明天，并加 0~20 分钟抖动，别所有人整点一起挤
+  if (t.getTime() <= Date.now() + 60_000) t.setDate(t.getDate() + 1);
+  t.setMinutes(t.getMinutes() + Math.floor(Math.random() * 20));
+  return t.getTime();
+}
+
+// 调度器：每分钟看一次谁到点了
+setInterval(() => {
+  for (const { uid } of db.dueSchedules()) {
+    const user = db.getUser(uid);
+    if (!user) continue;
+    db.setUserSchedule(uid, user.schedule, nextRunAt(user.schedule));
+    if (activeJob(uid)) continue;
+    db.enqueue({ kind: 'run', uid, visitorId: user.visitor_id, tasks: ['login', 'article', 'video', 'daily', 'weekly', 'special'] });
+    db.addEvent(null, uid, 'schedule', { text: `⏰ 到点自动开跑 ${user.schedule}` });
+  }
+}, 60_000).unref?.();
 
 // 没有账号也能跑的自检任务
 app.post('/api/selftest', (req, res) => {

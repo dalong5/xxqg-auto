@@ -75,3 +75,11 @@
 - 顺带修了卡题：提示没匹配到选项时空点「确 定」不生效，现在补选一个随机项再点，两次仍无变化才收工。
 
 分数仍 27（每日 0/5、每周、专项都被滑块挡着，共 18 分）。
+### 2026-11-03 多人化 + 定时（滑块暂搁）
+
+滑块按「CDP=devtools」线索留给下一轮，先把能做的功能补完（用户要求别卡在一个点上）：
+
+- 邀请码：`INVITE_CODE` 配了才放行，`POST /api/register` 验码后写 `visitors.approved`，`login/start` 走 `needApproved` 中间件；不配就是全开放，单机自用照旧。
+- 每访客额度落到库：`visitors.max_accounts`（默认 1，可单独调），`/api/me` 返回 `approved/needInvite/maxAccounts`，前端出邀请码输入条。
+- 定时：`users.schedule` + `next_run_at`，`POST /api/users/:uid/schedule {at:"HH:mm"}`，服务端每分钟 tick 一次，到点入队全套任务并自动排下一次（+0~20 分钟随机抖动防挤）。已实测：强制到点后 1 分钟内自动建出 `login,article,video,daily,weekly,special` 任务。
+- 实测邀请码门禁：未放行 `login/start` = 403、错码 403、对码 200 后 `/api/me.approved` 变 true。
