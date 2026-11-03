@@ -15,14 +15,16 @@ const LAUNCH_ARGS = [
   '--disable-features=RendererCodeIntegrity,IsolateOrigins,site-per-process',
 ];
 
+export const HEADED = /^(1|true|yes)$/i.test(process.env.XXQG_HEADED || '');
+
 export async function getBrowser() {
   if (browser?.isConnected()) return browser;
   browser = await chromium.launch({
     // 本机有 Chrome 用 Chrome，容器里用 CHROME_PATH 指向 chromium
     channel: config.chromePath ? undefined : process.env.CHROME_CHANNEL || 'chrome',
     executablePath: config.chromePath || undefined,
-    headless: true,
-    args: LAUNCH_ARGS,
+    headless: !HEADED,
+    args: HEADED ? [...LAUNCH_ARGS, '--window-size=1440,940', '--window-position=0,0'] : LAUNCH_ARGS,
   });
   browser.on('disconnected', () => {
     browser = null;
@@ -37,7 +39,8 @@ export async function closeBrowser() {
 
 // 抹掉自动化痕迹：webdriver、空 plugins、chrome 对象、WebGL 厂商
 const STEALTH = () => {
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  // 真 Chrome 里是 false，不是 undefined，删属性反而露馅
+  Object.defineProperty(navigator, 'webdriver', { get: () => false });
   Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
   Object.defineProperty(navigator, 'plugins', {
     get: () => [
@@ -86,8 +89,13 @@ export async function newSession(jar, { uid } = {}) {
   const ctx = await b.newContext({
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai',
-    viewport: { width: 1440 + Math.floor(Math.random() * 60), height: 900 },
-    deviceScaleFactor: 1,
+    // headless 下 Chrome 的 UA 带 "HeadlessChrome"，前端指纹会直接记成 Chrome Headless。
+    // 用真 Chrome 的 UA 覆盖，别的字段（UA-CH、WebGL）本来就不带 headless 标记。
+    userAgent: HEADED
+      ? undefined
+      : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
+    viewport: HEADED ? null : { width: 1440 + Math.floor(Math.random() * 60), height: 900 },
+    deviceScaleFactor: HEADED ? undefined : 1,
     extraHTTPHeaders: { 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' },
     storageState: state,
   });

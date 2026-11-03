@@ -1,0 +1,11 @@
+import fs from 'node:fs';
+let c = fs.readFileSync('probe_ua.mjs', 'utf8');
+const a = c.indexOf("window.__js.push(");
+const lineStart = c.lastIndexOf('\n', a) + 1;
+const lineEnd = c.indexOf('\n', a);
+c = c.slice(0, lineStart) + "    if (typeof s === 'string' && s.includes('TrackList')) window.__js.push(s);" + c.slice(lineEnd);
+const b2 = c.indexOf("for (const s of arr)");
+const b3 = c.indexOf('\n', b2);
+c = c.slice(0, b2) + "for (const s of arr) console.log('FULL', s.slice(0, 3000));" + c.slice(b3);
+fs.writeFileSync('probe_full.mjs', c);
+console.log('ok');

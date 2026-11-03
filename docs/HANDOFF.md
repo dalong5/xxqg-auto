@@ -40,8 +40,16 @@ Windows + DSH 沙箱下 Chromium 必须 `danger-full-access`。账号 cookie 在
 
 > 注意：**换中国 IP 也一样 F001**，所以别再往「境外 IP」这个方向想了。
 
+第二轮补充（2026-11-03 深夜），全部照做仍是 F001，别再重复：
+
+- 阿里云官方错误码表：`F001` = 疑似攻击请求、风险策略不通过；另有 `F024` = 检测到自动化脚本模拟点击/滑动。
+- 官方问答明确写过：**开着 F12/devtools、触发敏感调试行为，就会被判 F001**（原文：「开启F12 devtools并触发敏感调试行为被风控拦截，不会影响正常用户，需要调试可在控制台开启测试模式」）。Playwright 全靠 CDP，等价于 devtools 常驻 —— **这是目前最像的成因**，下一轮优先验证。
+- 官方另一条：`captchaVerifyParam` 里的 `+` 若被转义成空格，服务端必判失败；本链路是页面自己拼 header，未发生，排除。
+- 一致性实验也无用：`--disable-blink-features=AutomationControlled`、`webdriver=false`、去掉 UA 的 `HeadlessChrome/`、有头、让 innerWidth/outerWidth/screen 三者一致（本机实际 CSS 屏 1280×720、DPR 1，原来写死 1440×900 viewport 反而是假指纹）。
+
 ### 还没试过的方向（按性价比排序）
 
+0. **验证「CDP = devtools」这条**：①最简单是让人在真 Chrome 里手动拖一次，若人能过而我们过不了，就锁定 CDP；②若锁定，试 `--remote-debugging-pipe` vs `--remote-debugging-port`、试 Puppeteer 旧版 `chrome-remote-interface`、试 Chrome 扩展注入脚本（无 devtools 协议痕迹）、试 `chrome.debugger` 之外的原生方案；③也可试开启阿里云控制台的「测试模式」（T005 直接放行，但那是租户级配置，学习强国未必开）。
 1. **把 `data` 解出来看结构**。密文是飞林加密，key 在 `fl6.js`/`fp.js` 里；解开就能看出它是「轨迹点数组」还是「设备指纹 + 轨迹」，也能知道字段是不是退化（比如时间戳全等、`x` 不走）。这是最有可能一击命中的方向。
 2. **直接打 `VerifyCaptchaV3`**（`https://1gjqf1.captcha-open.aliyuncs.com`，`Action=VerifyCaptchaV3`，参数见 `research/probe_dec2.mjs` 抓到的原文）。自己造 `data` 送上去，用响应二分出「哪一截数据被拒」，比在浏览器里盲调快得多。
 3. **换引擎**：Firefox 已装（`npx playwright install firefox`），但 `firefox.launch()` 在本机 180s 起不来，没深究；WebKit 同理没试。

@@ -168,7 +168,7 @@ async function fillEmptyBlanks(page) {
  * 答题：题目页自带「查看提示」，提示里就是答案。
  * 这是官方答案源，比外部题库稳，不用维护答案表。
  */
-export async function quiz(kind, { jar, progress, uid }) {
+export async function quiz(kind, { jar, progress, uid, refresh }) {
   const cfg = EXAM_ENTRY[kind];
   if (!cfg) throw new Error(`未知题型 ${kind}`);
   const task = progress().tasks?.[cfg.code];
@@ -176,19 +176,16 @@ export async function quiz(kind, { jar, progress, uid }) {
 
   const { page, close } = await newSession(jar, { uid });
   const log = progress.note || (() => {});
-  try {
+  // 进卷子：从积分页点「去答题」，周答/专项再挑一套没作答的
+  const enter = async () => {
     await page.goto('https://pc.xuexi.cn/points/my-points.html', { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(3000);
     await clearCaptcha(page);
-
-    // 入口是卡片里那个「去答题」，点标题没用
     const card = page.locator('.my-points-card', { hasText: cfg.name }).first();
     if (!(await card.count())) throw new Error(`页面上没有「${cfg.name}」入口`);
     await safeClick(page, card.locator('text=去答题').first(), { timeout: 15000 });
     await page.waitForTimeout(3000 + Math.floor(Math.random() * 1500));
     await clearCaptcha(page);
-
-    // 周答/专项要先挑一套没作答的卷子
     if (kind !== 'daily') {
       const paper = page.locator('button:has-text("开始答题"), button:has-text("未作答")').first();
       if (await paper.count()) {
@@ -196,9 +193,13 @@ export async function quiz(kind, { jar, progress, uid }) {
         await page.waitForTimeout(3000);
       }
     }
+  };
+  try {
+    await enter();
 
     let answered = 0;
     let submitted = false;
+    let stalls = 0;
     let lastQuestion = '';
     for (let n = 1; n <= 35; n++) {
       const body = page.locator('.q-body').first();
@@ -406,18 +407,45 @@ export async function quiz(kind, { jar, progress, uid }) {
           await page.waitForTimeout(600);
           await safeClick(page, finish).catch(() => {});
           await page.waitForTimeout(2500);
-          log('验证码关掉后重试完成');
-          // 阿里云风控把设备判成 F001 时怎么拖都过不了：清掉 abnormal_exam 再点一次，
-          // 客户端会跳过滑块直接 POST（服务端仍校验 header，所以只能算再一次机会）
+          log('关掉滑块后再试一次完成');
+          // 刷新一次拿新的 certifyId 再交一次：风控是抽样的，换一轮有概率过
           if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) {
             await page.locator('#JS_aliyun-captcha-close-btn').click().catch(() => {});
-            await page.evaluate(() => {
-              document.cookie = 'abnormal_exam=1; domain=.xuexi.cn; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT';
-            }).catch(() => {});
-            await safeClick(page, finish).catch(() => {});
-            await page.waitForTimeout(2500);
-            const still = await page.locator('#JS_aliyun-captcha-dialog.show').count();
-            log(still ? '[captcha-blocked] 滑块连续失败，本轮答题分拿不到' : '跳过滑块后重试完成');
+            log('[captcha-blocked] 滑块连续失败，回积分页重进卷子再交一次');
+            await enter().catch(() => {});
+            // 重进后可能停在未作答的原题上（按钮是「确 定」），要一路点到「完 成」
+            let done = false;
+            for (let k = 0; k < 6 && !done; k++) {
+              const fin = page.locator('.action-row button:has-text("完"), button:has-text("交卷")').first();
+              const nxt = page.locator('.action-row button:not([disabled])').first();
+              const target = (await fin.count()) ? fin : (await nxt.count()) ? nxt : null;
+              if (!target) break;
+              await clearCaptcha(page);
+              await safeClick(page, target).catch(() => {});
+              await page.waitForTimeout(2200);
+              if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) {
+                if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) {
+                  await page.locator('#JS_aliyun-captcha-close-btn').click().catch(() => {});
+                  log('[captcha-blocked] 重进后仍被滑块拦住，本轮答题分拿不到');
+                  done = true;
+                }
+              } else if (!(await page.locator('.q-body').count())) {
+                log('重进后已离开答题页，视为交卷');
+                done = true;
+              } else if (await fin.count()) {
+                log('重进后重试完成');
+                done = true;
+              }
+            }
+            if (!done) {
+              await page.waitForTimeout(2000);
+              if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) {
+                await page.locator('#JS_aliyun-captcha-close-btn').click().catch(() => {});
+                log('[captcha-blocked] 重进后仍被滑块拦住，本轮答题分拿不到');
+              } else {
+                log('重进后结束，交卷结果未知');
+              }
+            }
           }
         } else {
           log('已交卷');
@@ -428,22 +456,35 @@ export async function quiz(kind, { jar, progress, uid }) {
       if (!changed) {
         const tail = page.locator('.action-row button:has-text("交")').first();
         if (await tail.count()) continue;
-        // 点选填空有空位没填满时，确定会点了不生效，先补满
+        stalls += 1;
+        // 定点点不动：多半是这题没选上（提示没匹配到），补一个随机选项 + 补满空格再点
+        const opts = page.locator('.q-answer.choosable');
+        const optCount = await opts.count();
+        if (optCount) {
+          const picked = await page.locator('.q-answer.choosable.selected, .q-answer.choosable.checked').count();
+          if (!picked) {
+            const i = Math.floor(Math.random() * optCount);
+            await safeClick(page, opts.nth(i)).catch(() => {});
+            log(`没选出答案，随机补选第 ${i + 1} 个（共 ${optCount} 个）`);
+          }
+        }
         await fillEmptyBlanks(page);
-        log('题干一直没变，补填空位后再点一次确定');
-        await safeClick(page, next).catch(() => {});
-        const confirm2 = page.locator('.ant-modal button:has-text("确")').first();
-        if (await confirm2.count()) {
-          await safeClick(page, confirm2).catch(() => {});
-          submitted = true;
-          log('已交卷');
-          break;
+        if (stalls <= 2) {
+          log('题干一直没变，再点一次确定');
+          await safeClick(page, next).catch(() => {});
+          const confirm2 = page.locator('.ant-modal button:has-text("确")').first();
+          if (await confirm2.count()) {
+            await safeClick(page, confirm2).catch(() => {});
+            submitted = true;
+            log('已交卷');
+            break;
+          }
+          const tail2 = page.locator('.action-row button:has-text("交")').first();
+          if (await tail2.count()) continue;
+          continue;
         }
-        const tail2 = page.locator('.action-row button:has-text("交")').first();
-        if (!(await tail2.count())) {
-          log('还是没反应，收工');
-          break;
-        }
+        log('还是没反应，收工');
+        break;
       }
       await page.waitForTimeout(500 + Math.floor(Math.random() * 700));
     }
@@ -475,8 +516,23 @@ export async function quiz(kind, { jar, progress, uid }) {
     }
 
     await page.waitForTimeout(3000);
+    // 分数才算数：交卷成功就加分，没加分就是要记下来的失败
+    const before = task?.done ?? 0;
+    const after = await refreshCode(refresh, cfg.code);
+    if (typeof after === 'number' && after > before) log(`已加分：${cfg.name} ${before} → ${after}`);
+    else if (typeof after === 'number') log(`[captcha-blocked] ${cfg.name}仍未得分（${after}/${task?.max ?? '?'}），交卷没生效`);
     return `${cfg.name}作答 ${answered} 题`;
   } finally {
     await close();
+  }
+}
+
+async function refreshCode(refresh, code) {
+  try {
+    const s = await refresh?.();
+    const t = s?.tasks?.[code];
+    return t ? t.done : undefined;
+  } catch {
+    return undefined;
   }
 }
