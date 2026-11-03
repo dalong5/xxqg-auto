@@ -172,7 +172,8 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
   const cfg = EXAM_ENTRY[kind];
   if (!cfg) throw new Error(`未知题型 ${kind}`);
   const task = progress().tasks?.[cfg.code];
-  if (task && task.done >= task.max) return `${cfg.name}已满分，跳过`;
+  if (!task) return `${cfg.name}今天没出现在积分项里，跳过`;
+  if (task.done >= task.max) return `${cfg.name}已满分，跳过`;
 
   const { page, close } = await newSession(jar, { uid });
   const log = progress.note || (() => {});
@@ -308,7 +309,6 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
 
       const next = page.locator('.action-row > button').first();
       if (!(await next.count())) break;
-      if (n >= 4) log('[dbg] ' + (await page.locator('.action-row').first().innerHTML().catch(() => '')).replace(/\\s+/g, ' ').slice(0, 160) + ' modal=' + (await page.locator('.ant-modal').count()));
 
       // 没提示 / 没匹配上时按钮是禁用的，先补选，别卡死
       for (let t = 0; t < 6; t++) {
@@ -521,7 +521,7 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
     const after = await refreshCode(refresh, cfg.code);
     if (typeof after === 'number' && after > before) log(`已加分：${cfg.name} ${before} → ${after}`);
     else if (typeof after === 'number') log(`[captcha-blocked] ${cfg.name}仍未得分（${after}/${task?.max ?? '?'}），交卷没生效`);
-    return `${cfg.name}作答 ${answered} 题`;
+    return `${cfg.name}作答 ${answered} 题${typeof after === 'number' && after > before ? '' : '（未加分）'}`;
   } finally {
     await close();
   }

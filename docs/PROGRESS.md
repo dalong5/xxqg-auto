@@ -83,3 +83,8 @@
 - 每访客额度落到库：`visitors.max_accounts`（默认 1，可单独调），`/api/me` 返回 `approved/needInvite/maxAccounts`，前端出邀请码输入条。
 - 定时：`users.schedule` + `next_run_at`，`POST /api/users/:uid/schedule {at:"HH:mm"}`，服务端每分钟 tick 一次，到点入队全套任务并自动排下一次（+0~20 分钟随机抖动防挤）。已实测：强制到点后 1 分钟内自动建出 `login,article,video,daily,weekly,special` 任务。
 - 实测邀请码门禁：未放行 `login/start` = 403、错码 403、对码 200 后 `/api/me.approved` 变 true。
+### 2026-11-03 17:1x 收口
+
+- 每周/专项今天**根本不在积分项里**（`listScoreProgress` 只回 1/2/6/9/1002/1003），`my-points.html` 上也没有这两张卡，之前的 `页面上没有入口` 是假 bug。现在 `quiz()` 先看积分项，没有就 `今天没出现在积分项里，跳过`。
+- 去掉刷屏的 `[dbg]`；未得分时任务结论改成 `（未加分）`，不再用 ✔ 句式自欺。
+- 前端邀请码/排期双流程用真浏览器断言过：未放行时 `#invite` 可见、按钮变「先填邀请码」，填对码后即恢复；页面无 JS 报错。
