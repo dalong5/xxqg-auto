@@ -77,7 +77,7 @@ export async function seedProfile(uid, jar) {
   const ins = db.prepare(
     'INSERT INTO cookies (creation_utc, host_key, top_frame_site_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, source_port, last_update_utc, source_type, has_cross_site_ancestor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
   );
-  const pairs = jar instanceof Map ? [...jar] : Object.entries(jar);
+  const pairs = jar?.map instanceof Map ? [...jar.map] : jar instanceof Map ? [...jar] : Object.entries(jar || {});
   for (const [name, value] of pairs) {
     db.prepare('DELETE FROM cookies WHERE name = ? AND host_key = ?').run(name, HOST);
     const nonce = crypto.randomBytes(12);
@@ -134,7 +134,7 @@ const clean = (s) => s.replace(/^[A-Za-z][.、]\s*/, '').replace(/\s+/g, '');
 
 // 用真实鼠标作答当前题并点确定：先点「查看提示」拿官方答案（.answer 里就是「正确答案：B」），再照着选 / 填
 export async function advance() {
-  const r = await rects();
+  let r = await rects();
   let hint = '';
   if (r.tip) {
     await clickAt(r.tip[0], r.tip[1]);
@@ -143,6 +143,8 @@ export async function advance() {
       hint = await hintText();
     }
     if (process.env.XXQG_DEBUG) console.log('[plain] hint=', hint.slice(0, 70));
+    // 点提示可能引起重排/滚动，坐标必须重取
+    r = await rects();
   }
   const rawAns = (hint.split(/正确答案[:：]/)[1] || '').trim();
   const letters = (rawAns.match(/^[A-N][A-N\s、,，]*/) || [''])[0].replace(/[^A-N]/g, '');
@@ -204,7 +206,7 @@ export async function submit() {
  * 每日答题全流程（无 CDP 版）：预置 cookie → 开卷 → 逐题看提示作答 → 完成 → 拖滑块。
  * 返回 { ok, answered, submitted, why }
  */
-export async function runDaily(uid, jar, { maxQuestions = 8 } = {}) {
+export async function runDaily(uid, jar, { maxQuestions = 14 } = {}) {
   await seedProfile(uid, jar);
   await open(uid, 'https://pc.xuexi.cn/points/exam-practice.html');
   const log = (m) => console.log('[plain-daily]', m);
