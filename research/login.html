@@ -1,0 +1,196 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>login</title>
+    
+
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self';
+script-src 'self' 'unsafe-inline' 'unsafe-eval' 'report-sample' https://*.xuexi.cn https://g.alicdn.com https://long-term-cache.xuexi.cn https://retcode.alicdn.com;
+style-src 'self' blob: 'unsafe-inline' 'unsafe-eval' https://*.xuexi.cn;
+object-src 'self' https://*.xuexi.cn;
+base-uri 'self';
+connect-src 'self' https://*.xuexi.cn https://px-itrace.xuexi.cn https://arms-retcode.aliyuncs.com;
+frame-src 'self' https://*.xuexi.cn;
+font-src 'self' data: https://*.xuexi.cn https://at.alicdn.com;
+img-src 'self' data: blob: https://*.xuexi.cn;
+media-src 'self' data: blob: https://*.xuexi.cn;
+manifest-src 'self';
+worker-src blob:;">
+  <script type="text/javascript">
+  try {
+    document.addEventListener('DOMContentLoaded', function() {
+      try {
+        function _calcSha256Text(content, callback) {
+          if (typeof window.TextEncoder === 'undefined' || typeof window.crypto === 'undefined') {
+            return;
+          }
+          var textEncoder = new TextEncoder();
+          window.crypto && window.crypto.subtle && window.crypto.subtle.digest('SHA-256', textEncoder.encode(content))
+            .then(function(hashBuffer) {
+              var hashArray = Array.from(new Uint8Array(hashBuffer));
+              var hashHex = btoa(String.fromCharCode.apply(null, hashArray));;
+              callback({ origin: content, result: hashHex });
+            });
+        }
+        var insertedScriptObserver = new MutationObserver(function(_mutationList, _observer) {
+          _mutationList.forEach(function(_mutation) {
+            switch (_mutation.type) {
+              case 'childList' :
+                var _addedNodes = _mutation.addedNodes;
+                for (var i = 0; i < _addedNodes.length; i++) {
+                  if (_addedNodes[i].nodeName.toLowerCase() === 'script' && _addedNodes[i].textContent) {
+                    _calcSha256Text(_addedNodes[i].textContent, function(_sha256) {
+                      console.log("## script sha256：", _sha256);
+                      if (window._htmlCspMetaInjectSdkGlobal && (window._htmlCspMetaInjectSdkGlobal.inlineScriptSHA256 || '').indexOf(_sha256.result) < 0) {
+                        var insertedScriptCSPXHR = new XMLHttpRequest();
+                        insertedScriptCSPXHR.open('POST', 'https://security-op-admin-be.xuexi.cn/csp/cspRecordLog?_t=' + Date.now(), true);
+                        insertedScriptCSPXHR.setRequestHeader('Content-Type', 'application/json;charset=UTF-8;application/csp-report');  
+                        insertedScriptCSPXHR.send(
+                          JSON.stringify({
+                            "csp-report": {
+                              "violated-directive": "",
+                              "blocked-uri": _sha256.origin,
+                              "referrer": document.referrer,
+                              "script-sample": "",
+                              "source-file": "",
+                              "disposition": "",
+                              "original-policy": "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'report-sample'",
+                              "line-number": "",
+                              "effective-directive": "script-src-elem",
+                              "document-uri": window.location.href,
+                              "status-code": "",
+                              "message": "",
+                              "is-web-mutation-observer-report": "true"
+                            }
+                          })
+                        );
+                      }
+                    });
+                  }
+                }
+                break;
+            }
+          });
+        });
+        if (insertedScriptObserver) {
+          insertedScriptObserver.observe(document.querySelector("html"), { childList:true, subtree:true });
+        }
+      } catch(e) {
+        console.error('MutationObserver fail', e);
+      }
+    });
+  } catch(e) {
+    console.error('DOMContentLoaded addEventListener fail', e);
+  }
+</script>
+  <script type="text/javascript">
+    window._htmlCspMetaInjectSdkGlobal = {
+      'inlineScriptSHA256': '18BySr/oTPvMOC/gTyVQCfaFJjeIrgtcxKG0OVpHeQo= 0lALsfenq8IT/qHFRYDBJaFzxhm3hKXTrxyH7uy+zDk= xytfzh6it2poOz58yy5HTYcn+gJ+nw1BtzRZQHaoctg= gLm+NMGtaXtAZQSfkLXdBRdkScJjcQZSCSF1VY4tqJ0= BnCFkGAjFZ3kREX1ZE2yfB7fWmpSVb1QXOUZ9bmwYTg='
+    };
+    </script>
+  <script>if (false === true) {
+        window.location.href = 'https://pc.xuexi.cn/notFound.html';
+        // 页面下线
+      }</script><script>try {
+        // 获取IE版本
+        window.__getIEVersion = function() {
+          var userAgent = window.navigator.userAgent;
+          var isIE = userAgent.indexOf('compatible') > -1 && userAgent.indexOf('MSIE') > -1;
+          var isEdge = userAgent.indexOf('Edge') > -1 && !isIE;
+          var isIE11 = userAgent.indexOf('Trident') > -1 && userAgent.indexOf('rv:11.0') > -1;
+          if (isIE) {
+            var reIE = new RegExp('MSIE (\\\\d+\\\\.\\\\d+);');
+            reIE.test(userAgent);
+            var fIEVersion = parseFloat(RegExp["$1"]);
+            if (fIEVersion == 7) {
+              return 7;
+            } else if (fIEVersion == 8) {
+              return 8;
+            } else if (fIEVersion == 9) {
+              return 9;
+            } else if (fIEVersion == 10) {
+              return 10;
+            } else {
+              return 6;
+            }
+          } else if (isEdge) {
+            return 'edge';
+          } else if (isIE11) {
+            return 11;
+          } else {
+            return -1;
+          }
+        }
+
+        var ieVersion = __getIEVersion();
+
+        window.__lessIEVersion = function(version) {
+          if (ieVersion !== -1 && ieVersion !== 'edge') {
+            return ieVersion < version;
+          }
+          return false;
+        }
+
+        if (window.__lessIEVersion(11)) {
+          window.location.href = 'https://www.xuexi.cn/update';
+        }
+      } catch (e) {
+      }</script><script charset="utf-8" src="https://source.xuexi.cn/sd/ncpc/nc.js?t=2015052012"></script><script type="text/javascript">
+    try {
+      document.addEventListener("securitypolicyviolation", function(_cspError) {
+        console.log('csp error', _cspError);
+        var metaCSPXHR = new XMLHttpRequest();
+        metaCSPXHR.open('POST', 'https://security-op-admin-be.xuexi.cn/csp/cspRecordLog?_t=' + Date.now(), true);
+        metaCSPXHR.setRequestHeader('Content-Type', 'application/json;charset=UTF-8;application/csp-report');
+        metaCSPXHR.onreadystatechange = function () {};
+        metaCSPXHR.send(
+          JSON.stringify({
+            "csp-report" : {
+            	"violated-directive": _cspError.violatedDirective,
+            	"blocked-uri":  _cspError.blockedURI,
+            	"referrer": _cspError.referrer,
+            	"script-sample": _cspError.sample,
+            	"source-file": _cspError.sourceFile,
+            	"disposition": _cspError.disposition,
+            	"original-policy": _cspError.originalPolicy,
+            	"line-number": _cspError.lineNumber,
+            	"effective-directive": _cspError.effectiveDirective,
+            	"document-uri": _cspError.documentURI,
+            	"status-code": _cspError.statusCode,
+            	"message": "",
+            }
+          })
+        );
+      });
+    } catch (e) {
+      console.error('security policy violation error', e);
+    }
+    </script>
+  
+<script type="text/javascript">window.GRAY_INJECTOR={appName:"pc_login_login",version:"20260121b75b9fb7e6",localStorageKey:"pc_login_login_20260121b75b9fb7e6",chunks:{headChunks:[{tagName:"link",attributes:{href:"/points/study-login/0.c46fea9f.css",rel:"stylesheet"}},{tagName:"link",attributes:{href:"/points/study-login/login.5b491767.css",rel:"stylesheet"}}],bodyChunks:[{tagName:"script",attributes:{src:"/points/study-login/vendors.1c4acf64.js"}},{tagName:"script",attributes:{src:"/points/study-login/login.0d1b2856.js"}}]},_insert:function(t,e,r){for(var r=document.getElementsByTagName(r)[0],o=document.createDocumentFragment(),n=this,i=0;i<t.length;i++){var s=t[i],a=document.createElement(t[i].tagName);if(s.attributes)for(var c in s.attributes)!1!==s.attributes[c]&&a.setAttribute(c,s.attributes[c]);s.attributes&&"async"in s.attributes||(a.async=!1),e&&(a.onerror=function(t){n._onLoadError(t,this.href)}),o.appendChild(a)}r.appendChild(o)},_onLoadError:function(t,e){console.error("Get gray file "+e+" error."),this.removeGrayConfig(),location.reload()},_getGrayConfigFromStorage:function(){if(window.localStorage)try{return JSON.parse(localStorage.getItem(this.localStorageKey))}catch(t){console.error("Get gray config error.")}return null},updateGrayConfig:function(t){var e;window.localStorage&&t.version&&t.chunks&&((e=this._getGrayConfigFromStorage())&&t.version===e.version||(this._removeHistoryGrayConfig(),localStorage.setItem(this.localStorageKey,JSON.stringify({version:t.version,chunks:t.chunks}))))},removeGrayConfig:function(){window.localStorage&&localStorage.removeItem(this.localStorageKey)},_removeHistoryGrayConfig:function(){for(var t in localStorage)/^pc_login_login_[a-zA-Z0-9]{18}/.test(t)&&localStorage.removeItem(t)},getAppVersion:function(){try{var t=this._getGrayConfigFromStorage();return t&&t.version||this.version}catch(t){return this.version}},render:function(){this.isGray=!1;try{var t;window.localStorage&&(t=this._getGrayConfigFromStorage())&&t.version&&t.chunks&&t.chunks.headChunks&&t.chunks.bodyChunks&&(this.version=t.version,this.chunks=t.chunks,this.isGray=!0)}catch(t){console.error("Gray injector render error."+t)}this._insert(this.chunks.headChunks,this.isGray,"head"),this._insert(this.chunks.bodyChunks,this.isGray,"body")}};</script></head><body id="body-body"><div id="app"></div><script>window.BUILD_VERSION = 1768962135346;
+      !(function(c,b,d,a){c[a]||(c[a]={});c[a].config=
+          {
+            pid:"hr5uxr169c@4fe2af14d876b2d",
+            appType:"web",
+            imgUrl:"https://arms-retcode.aliyuncs.com/r.png?",
+            sendResource:true,
+            enableLinkTrace:true,
+            behavior:true,
+            useFmp:true,
+            disableHook:true,
+            environment:"prod",
+            release: window.BUILD_VERSION + ""
+          };
+      with(b)with(body)with(insertBefore(createElement("script"),firstChild))setAttribute("crossorigin","",src=d)
+      })(window,document,"https://retcode.alicdn.com/retcode/bl.js","__bl");</script><script>window.QRCODE_ONLY = (function() {
+        if (window.location.href.indexOf('login') > -1) {
+          var qrcode = window.location.href.match(/qrcode=([^&#]*)/)
+          qrcode = qrcode ? decodeURIComponent(qrcode[1]) : '';
+
+          return window.self !== window.top && qrcode == 'only';
+        }
+
+        return false;
+      })();
+
+      if (window.QRCODE_ONLY) {
+        document.getElementById('body-body').style.background = 'transparent';
+        document.getElementById('body-body').classList.add('qrcode');
+      }</script><script type="text/javascript">if(window.GRAY_INJECTOR){try{GRAY_INJECTOR.render()}catch(e){console.error('GRAY_INJECTOR.render error'+e)}}</script></body></html>

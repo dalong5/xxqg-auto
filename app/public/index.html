@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>强国助手 · 单账号测试版</title>
+<style>
+  :root { color-scheme: dark; --bg:#0f1115; --card:#171a21; --line:#242a35; --txt:#e6e9ef; --dim:#8d97a8; --red:#e0353b; --grn:#2ecc71; --amb:#ffd479; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.65 system-ui,"Microsoft YaHei",sans-serif; background:var(--bg); color:var(--txt); }
+  header { display:flex; align-items:center; gap:10px; padding:14px 20px; border-bottom:1px solid var(--line); }
+  .logo { width:26px; height:26px; border-radius:7px; background:linear-gradient(135deg,#e0353b,#8b1d22); display:grid; place-items:center; font-weight:700; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  .sub { color:var(--dim); font-size:12px; }
+  .dot { width:7px; height:7px; border-radius:99px; background:#555; margin-left:auto; }
+  .dot.on { background:var(--grn); box-shadow:0 0 8px var(--grn); }
+  .dot.off { background:var(--red); }
+  main { max-width: 860px; margin: 0 auto; padding: 18px 20px 40px; display:grid; gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .card > h2 { font-size:12px; margin:0 0 12px; color:var(--dim); letter-spacing:.06em; font-weight:600; }
+  button { font:inherit; border:1px solid var(--line); background:#1e232c; color:var(--txt); padding:9px 13px; border-radius:8px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:#3a4456; }
+  button.primary { background:var(--red); border-color:var(--red); color:#fff; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  #qrbox { display:grid; place-items:center; min-height:232px; border:1px dashed var(--line); border-radius:10px; margin:12px 0; }
+  #qrbox img { width:220px; height:220px; background:#fff; border-radius:6px; padding:6px; }
+  .hint { color:var(--dim); font-size:12px; }
+  .acct { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .acct b { font-size:17px; }
+  .scores { display:flex; gap:26px; margin:6px 0 14px; }
+  .scores b { font-size:26px; line-height:1; font-variant-numeric:tabular-nums; }
+  .scores span { display:block; color:var(--dim); font-size:11px; margin-top:4px; }
+  .rows { display:grid; gap:9px; margin-top:4px; }
+  .row { display:grid; grid-template-columns: 92px 1fr 52px; gap:10px; align-items:center; font-size:12.5px; }
+  .bar { height:6px; background:#232936; border-radius:99px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--grn); }
+  .row.of i { background:#394659; }
+  .num { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+  #log { height:300px; overflow:auto; background:#0b0d11; border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:12px/1.7 ui-monospace,Consolas,monospace; color:#b9c2d0; white-space:pre-wrap; }
+  #log .ok { color:var(--grn); } #log .bad { color:#ff6b6b; } #log .step { color:var(--amb); } #log .dim { color:#6b7482; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px){ .grid { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">强</div>
+  <div>
+    <h1>强国助手 <span class="sub">单账号测试版</span></h1>
+    <div class="sub">扫码登录 · 签到 · 阅读 / 视听 / 答题 · 积分回查</div>
+  </div>
+  <div class="dot" id="conn" title="worker 状态"></div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>账号</h2>
+    <div id="acct"><div class="hint">还没有绑定账号</div></div>
+    <div id="qrbox"><span class="hint">点下面按钮生成二维码</span></div>
+    <div id="loginmsg" class="hint">用「学习强国」APP 扫码，扫完在手机上点确认，2 分钟内有效</div>
+    <div class="actions">
+      <button class="primary" id="btnLogin">生成登录二维码</button>
+      <button id="btnSync">查当前积分</button>
+      <button id="btnDel" hidden>解绑账号</button>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>今日任务</h2>
+      <div id="rows"><div class="hint">登录后显示各项进度</div></div>
+      <div class="actions">
+        <button class="primary" id="btnAll">一键跑完今日</button>
+        <button id="btnArticle">只阅读</button>
+        <button id="btnVideo">只视听</button>
+        <button id="btnQuiz">只答题</button>
+      </div>
+      <div class="hint" style="margin-top:10px">阅读/视听每篇要真停留 60 秒左右，一项都别急着关页面。</div>
+    </section>
+
+    <section class="card">
+      <h2>执行日志</h2>
+      <div id="log"></div>
+      <div class="actions">
+        <button id="btnSelf">浏览器自检</button>
+        <button id="btnClear">清空日志</button>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const NAMES = { 1:'阅读文章', 2:'视听学习', 9:'每日登录', 1002:'文章时长', 1003:'视听时长', 6:'每日答题', 5:'每周答题', 4:'专项答题' };
+let user = null;
+let stream = null;
+let loginStream = null;
+
+const log = (text, cls = '') => {
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  d.textContent = `[${new Date().toLocaleTimeString('zh-CN')}] ${text}`;
+  $('log').appendChild(d);
+  $('log').scrollTop = $('log').scrollHeight;
+};
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function renderScore(score) {
+  if (!score) return;
+  $('rows').innerHTML = '';
+  for (const [code, t] of Object.entries(score.tasks || {})) {
+    const pct = t.max ? Math.min(100, (t.done / t.max) * 100) : 0;
+    const row = document.createElement('div');
+    row.className = 'row' + (t.done >= t.max ? ' of' : '');
+    row.innerHTML = `<span>${NAMES[code] || code}</span><div class="bar"><i style="width:${pct}%"></i></div><span class="num">${t.done}/${t.max}</span>`;
+    $('rows').appendChild(row);
+  }
+  if (!Object.keys(score.tasks || {}).length) $('rows').innerHTML = '<div class="hint">接口未返回任务数据</div>';
+}
+
+function renderAccount() {
+  if (!user) {
+    $('acct').innerHTML = '<div class="hint">还没有绑定账号</div>';
+    $('rows').innerHTML = '<div class="hint">登录后显示各项进度</div>';
+    $('btnDel').hidden = true;
+    return;
+  }
+  const s = user.last_score || { today: '-', total: '-' };
+  const exp = user.expires_at ? new Date(user.expires_at).toLocaleDateString('zh-CN') : '未知';
+  $('acct').innerHTML = `<div class="acct"><b>${user.nick || user.uid}</b>
+    <span class="hint">登录态有效至 ${exp}</span></div>
+    <div class="scores"><div><b>${s.today ?? '-'}</b><span>今日得分</span></div>
+    <div><b>${s.total ?? '-'}</b><span>总积分</span></div></div>`;
+  $('btnDel').hidden = false;
+  renderScore(s.tasks ? s : null);
+}
+
+async function load() {
+  const users = await api('/api/users');
+  user = users[0] || null;
+  renderAccount();
+}
+
+// ---------- SSE ----------
+function followJob(jobId) {
+  stream?.close();
+  const es = new EventSource(`/api/jobs/${jobId}/events`);
+  stream = es;
+  es.onmessage = (e) => {
+    const { type, payload } = JSON.parse(e.data);
+    if (type === 'log') log(payload.text, payload.text.startsWith('✔') ? 'ok' : payload.text.startsWith('✘') ? 'bad' : payload.text.startsWith('▶') ? 'step' : 'dim');
+    if (type === 'score') { user.last_score = payload; renderAccount(); }
+    if (type === 'error') log(payload.error, 'bad');
+  };
+  es.addEventListener('end', () => { log('任务结束', 'ok'); es.close(); refresh(); });
+  es.onerror = () => es.close();
+}
+
+async function run(tasks) {
+  if (!user) return log('请先扫码登录', 'bad');
+  try {
+    const d = await api(`/api/users/${user.uid}/run`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tasks }),
+    });
+    log(`已入队：${tasks.join(' / ')}（队列 ${d.queued}）`, 'step');
+    followJob(d.jobId);
+  } catch (e) { log(e.message, 'bad'); }
+}
+
+async function refresh() {
+  if (!user) return log('请先扫码登录', 'bad');
+  try {
+    const d = await api(`/api/users/${user.uid}/sync`, { method: 'POST' });
+    followJob(d.jobId);
+  } catch (e) { log(e.message, 'bad'); }
+}
+
+// ---------- 登录 ----------
+$('btnLogin').onclick = async () => {
+  loginStream?.close();
+  $('qrbox').innerHTML = '<span class="hint">生成中…</span>';
+  let sid;
+  try { ({ sid } = await api('/api/login/start', { method: 'POST' })); }
+  catch (e) { $('qrbox').innerHTML = `<span class="hint">${e.message}</span>`; return; }
+
+  const es = new EventSource(`/api/login/${sid}/events`);
+  loginStream = es;
+  es.onmessage = async (e) => {
+    const { type, payload } = JSON.parse(e.data);
+    if (type === 'qr') {
+      const st = await api(`/api/login/${sid}`);
+      if (st.qr) $('qrbox').innerHTML = `<img src="${st.qr}" alt="登录二维码">`;
+    }
+    if (type === 'done') {
+      es.close();
+      $('qrbox').innerHTML = '<span class="hint">登录成功，可以开始任务</span>';
+      log(`登录成功：${payload.nick}`, 'ok');
+      await load();
+      if (payload.score) { user.last_score = payload.score; renderAccount(); }
+    }
+    if (type === 'failed') { es.close(); $('qrbox').innerHTML = `<span class="hint">${payload.error}</span>`; log(payload.error, 'bad'); }
+  };
+  es.onerror = () => es.close();
+  // 首帧二维码可能早于 SSE 就建好
+  const st = await api(`/api/login/${sid}`).catch(() => null);
+  if (st?.qr) $('qrbox').innerHTML = `<img src="${st.qr}" alt="登录二维码">`;
+};
+
+$('btnDel').onclick = async () => {
+  if (!confirm('解绑后需要重新扫码')) return;
+  await api(`/api/users/${user.uid}`, { method: 'DELETE' });
+  user = null; renderAccount(); log('已解绑');
+};
+
+$('btnAll').onclick = () => run(['login', 'article', 'video', 'daily', 'weekly', 'special']);
+$('btnArticle').onclick = () => run(['article']);
+$('btnVideo').onclick = () => run(['video']);
+$('btnQuiz').onclick = () => run(['daily']);
+$('btnSync').onclick = refresh;
+$('btnClear').onclick = () => ($('log').innerHTML = '');
+$('btnSelf').onclick = async () => {
+  const d = await api('/api/selftest', { method: 'POST' });
+  log('开始浏览器自检（不需要账号）', 'step');
+  followJob(d.jobId);
+};
+
+// worker 心跳
+async function beat() {
+  try {
+    const h = await api('/healthz');
+    $('conn').className = 'dot ' + (h.workers > 0 ? 'on' : 'off');
+    $('conn').title = h.workers > 0 ? `worker 在线（排队 ${h.queued}）` : '没有 worker 在线，任务不会执行';
+  } catch { $('conn').className = 'dot off'; }
+}
+beat();
+setInterval(beat, 5000);
+load().catch((e) => log(e.message, 'bad'));
+</script>
+</body>
+</html>

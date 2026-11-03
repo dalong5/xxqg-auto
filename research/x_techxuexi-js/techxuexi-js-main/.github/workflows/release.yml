@@ -1,0 +1,63 @@
+name: Release
+
+# 用于发布release
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: ''
+        required: true
+        default: 'v'
+      prerelease:
+        description: ''
+        required: true
+        default: 'false'
+      techxuexi_text:
+        description: ''
+        required: true
+        default: '更新日志请查看 https://github.com/TechXueXi/techxuexi-js/blob/main/techxuexi-js/version_info.json 交流群： https://github.com/TechXueXi/TechXueXi/issues/14 ，使用方法：https://github.com/TechXueXi/techxuexi-js'
+  
+
+jobs:
+  Release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Get tag
+        id: tag
+        run: |
+          echo ::set-output name=tag::${GITHUB_REF#refs/tags/}
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.event.inputs.version_tag }}
+          release_name: ${{ github.event.inputs.version_tag }}
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease }}
+          body: ${{ github.event.inputs.techxuexi_text }}
+      - name: Delete Workflow Runs
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 1
+          keep_minimum_runs: 0
+      - name: send telegram message on push
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_TO }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          disable_web_page_preview: true
+          disable_notification: false
+          format: markdown
+          message: |
+            #techxuexijs  #发布 通知
+            仓库: ${{ github.repository }}
+            `${{ github.event.inputs.version_tag }}` 的版本已经发布。
+            [点击查看这个Github release的详细信息](https://github.com/${{ github.repository }}/releases/tag/${{ github.event.inputs.version_tag }})
+

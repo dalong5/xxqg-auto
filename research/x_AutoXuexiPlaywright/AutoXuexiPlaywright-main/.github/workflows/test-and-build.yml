@@ -1,0 +1,70 @@
+name: Build Packages
+on:
+    push:
+        branches:
+            - 'main'
+        tags:
+            - 'v[0-9]+.[0-9]+.[0-9]+'
+    pull_request:
+        branches:
+            - 'main'
+    workflow_dispatch:
+jobs:
+    test-and-build:
+        name: Test project and build packages
+        runs-on: ubuntu-latest
+        steps:
+            - name: Print Info
+              run: |
+                  echo github.ref_type is ${{ github.ref_type }}
+                  echo github.event_name is ${{ github.event_name }}
+            - name: Checkout
+              uses: actions/checkout@v4
+            - name: Setup PDM
+              uses: pdm-project/setup-pdm@v4
+            - name: Install depends
+              run: pdm install --group=uvloop --group=gui --dev
+            - name: Install Qt depends
+              # See https://github.com/cbrnr/mnelab/issues/327#issuecomment-1074853392
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                    libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+                    libxkbcommon-x11-0 xvfb libxcb-randr0 \
+                    libxcb-render-util0 libxcb-xinerama0 libegl1 \
+                    libxcb-shape0 libxcb-cursor0
+            - name: Run program tests
+              env:
+                RUFF_OUTPUT_FORMAT: github
+              run: pdm run pytest
+            - name: Build wheel
+              run: pdm build
+            - name: Release
+              uses: softprops/action-gh-release@v2
+              if: github.ref_type  == 'tag'
+              with:
+                  files: dist/*
+                  generate_release_notes: true
+
+    push-to-techxuexi:
+        name: Sync Code to TechXueXi
+        needs: test-and-build
+        runs-on: ubuntu-latest
+        if: github.event_name  == 'push'
+        steps:
+        - name: check
+          uses: actions/checkout@v4
+          with:
+              fetch-depth: 0
+        - name: Git Configuration
+          env:
+              DEBIAN_FRONTEND: noninteractive
+          run: |
+              git config --global user.name 'GitHub' && git config --global user.email 'noreply@github.com'
+        - name: Push Code
+          run: |
+              mkdir -p ~/.ssh
+              echo -e "${{ secrets.SSHKEY }}" > ~/.ssh/id_rsa
+              chmod 600 ~/.ssh/id_rsa
+              ssh-keyscan github.com > ~/.ssh/known_hosts
+              git push -f "git@github.com:TechXueXi/AutoXuexiPlaywright.git" "main:main" --tags

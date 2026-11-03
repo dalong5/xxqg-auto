@@ -1,0 +1,32 @@
+services:
+  api:
+    build: .
+    command: node src/server.js
+    ports:
+      - "8099:8099"
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - xxqg-data:/data
+    restart: unless-stopped
+
+  # 执行器单独跑：崩了不影响接口，也方便加机器横向扩
+  worker:
+    build: .
+    command: node src/worker.js
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - xxqg-data:/data
+    shm_size: "1gb"
+    depends_on:
+      - api
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+volumes:
+  xxqg-data:
+

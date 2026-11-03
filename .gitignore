@@ -1,0 +1,13 @@
+node_modules/
+.npmcache/
+data/
+.env
+*.log
+*.zip
+*.7z
+.pw-browsers/
+tmp_*.cjs
+tmp_*.mjs
+test_*.mjs
+probe*.mjs
+uitest.mjs

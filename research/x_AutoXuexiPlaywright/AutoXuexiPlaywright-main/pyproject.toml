@@ -1,0 +1,193 @@
+[project]
+name = "autoxuexiplaywright"
+description = "A tool to finish something boring."
+authors = [
+    {name = "autoxuexiplaywright-dev", email = "180894403+autoxuexiplaywright-dev@users.noreply.github.com"},
+]
+dependencies = [
+    "playwright>=1.49.1",
+    "platformdirs>=4.3.6",
+    "semver>=3.0.2",
+    "pydantic>=2.10.4",
+]
+requires-python = ">=3.12,<3.14"
+readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
+dynamic = ["version"]
+
+[project.optional-dependencies]
+uvloop = [
+    "uvloop>=0.21.0",
+]
+gui = [
+    "pyside6<6.8.1,>=6.8.0.2",
+]
+
+[project.scripts]
+autoxuexiplaywright = "autoxuexiplaywright.__main__:main"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[dependency-groups]
+build = [
+    "babel>=2.16.0",
+]
+test = [
+    "pytest-cov>=6.0.0",
+    "pytest-ruff>=0.4.1",
+    "pytest-playwright>=0.6.2",
+    "pytest-asyncio>=0.25.0",
+]
+
+[tool.pdm]
+distribution = true
+
+[tool.pdm.version]
+source = "file"
+path = "src/autoxuexiplaywright/__init__.py"
+
+[tool.pdm.scripts]
+_extract_gettext.cmd = [
+    "pybabel",
+    "extract",
+    "-k", "__",
+    "--no-default-keywords",
+    "--project=autoxuexiplaywright",
+    "--copyright-holder=AutoXuexiPlaywright",
+]
+# pdm run extract_pot --version=$(pdm show --version)
+extract_pot.composite = ["_extract_gettext -o resources/translations/autoxuexiplaywright.pot src/autoxuexiplaywright/"]
+extract_pot.help = "Generate/Update pot from source code."
+# pdm run init_po --locale=zh_CN
+init_po.cmd = [
+    "pybabel",
+    "init",
+    "-i", "resources/translations/autoxuexiplaywright.pot",
+    "-D", "autoxuexiplaywright",
+    "-d", "resources/translations",
+]
+init_po.help = "Initialize a new po from pot."
+# pdm run update_po --locale=zh_CN
+update_po.cmd = [
+    "pybabel",
+    "update",
+    "-i", "resources/translations/autoxuexiplaywright.pot",
+    "-D", "autoxuexiplaywright",
+    "-d", "resources/translations",
+    "--update-header-comment",
+]
+update_po.help = "Update existing po from pot."
+build_mo.cmd = [
+    "pybabel",
+    "compile",
+    "-D", "autoxuexiplaywright",
+    "-d", "resources/translations",
+]
+build_mo.help = "Build po."
+post_build_mo.call = "scripts.build:copy_mo"
+post_build_mo.help = "Triggered after build_mo is executed."
+build_qt_ui_rcc.cmd = [
+    "pyside6-rcc",
+    "--binary",
+    "--verbose",
+    "--output", "src/autoxuexiplaywright/resources/ui.rcc",
+    "resources/ui.qrc",
+]
+build_qt_ui_rcc.help = "Build Qt resources file."
+pre_build_assets.call = "os:makedirs('src/autoxuexiplaywright/resources', exist_ok = True)"
+pre_build_assets.help = "Triggered before build_assets is executed."
+build_assets.composite = ["build_mo", "build_qt_ui_rcc"]
+build_assets.help = "Build assets required."
+pre_build.composite = ["build_assets"]
+pre_build.help = "Triggered before build is executed."
+clean_assets.call = "shutil:rmtree('src/autoxuexiplaywright/resources')"
+clean_assets.help = "Clean built assets."
+clean.composite = ["clean_assets"]
+clean.help = "Clean built contents."
+
+[tool.basedpyright]
+typeCheckingMode = "all"
+
+[tool.pytest.ini_options]
+addopts = "--cov=src/autoxuexiplaywright --ruff"
+required_plugins = "pytest-ruff pytest-cov"
+
+[tool.ruff]
+extend-exclude = [
+    "__pycache__",
+    ".pdm-build",
+]
+output-format = "grouped"
+
+[tool.ruff.lint]
+select = [
+    "F", # Pyflakes
+    "E", "W", # pycodestyle, Error, Warning
+    "I", # isort
+    "N", # pep8-naming
+    "D", # pydocstyle
+    "ANN", # flake8-annotations
+    "ASYNC", # flake8-async
+    "S", # flake8-bandit
+    "B", # flake8-bugbear
+    "A", # flake8-builtins
+    "COM", # flake8-commas
+    "C4", # flake8-comprehensions
+    "ISC", # flake8-implicit-str-concat
+    "T20", # flake8-print
+    "PT", # flake8-pytest-style
+    "Q", # flake8-quotes
+    "RSE", # flake8-raise
+    "RET", # flake8-return
+    "SIM", # flake8-simplify
+    "ARG", # flake8-unused-arguments
+    "PTH", # flake8-use-pathlib
+    "FIX", # flake8-fixme
+    "ERA", # eradicate
+    "PL", # Pylint
+    "R", # Refactor
+    "FLY", # flynt
+    "FURB", # refurb
+    "LOG", # flake8-logging
+    "RUF", # Ruff specific
+]
+ignore = [
+    "ANN101", # type for self
+    "ANN102", # type for cls
+    "FIX002", # todo is not critical,
+    "N813",   # camelCase to snake_case
+]
+
+[tool.ruff.lint.per-file-ignores]
+# import rename does not rename original is liked by pyright
+"src/autoxuexiplaywright/**/*.py" = ["PLC0414"]
+# Use camelCase to follow PySide6's style.
+"src/autoxuexiplaywright/ui/qt/*.py" = ["N802", "N803", "N806", "N812", "N815"]
+# Too many branches
+"src/autoxuexiplaywright/ui/qt/qtranslucentbackgroundframelesswidget.py" = ["PLR0912"]
+# random is not secure
+"src/autoxuexiplaywright/processor/readers/simple_reader.py" = ["S311"]
+
+[tool.ruff.lint.flake8-annotations]
+mypy-init-return = true
+suppress-dummy-args = true
+suppress-none-returning = true
+
+[tool.ruff.lint.flake8-gettext]
+extend-function-names = ["__"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+length-sort = true
+length-sort-straight = true
+lines-after-imports = 2
+no-sections = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-decorators = ["typing.overload"]
+
+[tool.ruff.format]
+docstring-code-format = true
