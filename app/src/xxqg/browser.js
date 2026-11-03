@@ -1,9 +1,12 @@
-import { chromium } from 'playwright';
+import { chromium, firefox } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
 
 let browser = null;
+// 滑块风控把「有 CDP 调试口」当成 devtools 入侵，Chromium 里怎么拟人都过不去；
+// 换成 Playwright 自驱的 Firefox（Juggler 协议，没有 CDP）绕开这条判定。
+const USE_FF = /^(firefox|ff)$/i.test(process.env.XXQG_ENGINE || '');
 
 const LAUNCH_ARGS = [
   '--no-sandbox',
@@ -19,13 +22,17 @@ export const HEADED = /^(1|true|yes)$/i.test(process.env.XXQG_HEADED || '');
 
 export async function getBrowser() {
   if (browser?.isConnected()) return browser;
-  browser = await chromium.launch({
-    // 本机有 Chrome 用 Chrome，容器里用 CHROME_PATH 指向 chromium
-    channel: config.chromePath ? undefined : process.env.CHROME_CHANNEL || 'chrome',
-    executablePath: config.chromePath || undefined,
-    headless: !HEADED,
-    args: HEADED ? [...LAUNCH_ARGS, '--window-size=1440,940', '--window-position=0,0'] : LAUNCH_ARGS,
-  });
+  if (USE_FF) {
+    browser = await firefox.launch({ headless: !HEADED, firefoxUserPrefs: { 'dom.webdriver.enabled': false } });
+  } else {
+    browser = await chromium.launch({
+      // 本机有 Chrome 用 Chrome，容器里用 CHROME_PATH 指向 chromium
+      channel: config.chromePath ? undefined : process.env.CHROME_CHANNEL || 'chrome',
+      executablePath: config.chromePath || undefined,
+      headless: !HEADED,
+      args: HEADED ? [...LAUNCH_ARGS, '--window-size=1440,940', '--window-position=0,0'] : LAUNCH_ARGS,
+    });
+  }
   browser.on('disconnected', () => {
     browser = null;
   });
@@ -36,6 +43,13 @@ export async function closeBrowser() {
   if (browser) await browser.close().catch(() => {});
   browser = null;
 }
+
+// Firefox 只用最小伪装：没有 chrome 对象，别硬塞
+const FF_STEALTH = () => {
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  } catch {}
+};
 
 // 抹掉自动化痕迹：webdriver、空 plugins、chrome 对象、WebGL 厂商
 const STEALTH = () => {
@@ -91,7 +105,7 @@ export async function newSession(jar, { uid } = {}) {
     timezoneId: 'Asia/Shanghai',
     // headless 下 Chrome 的 UA 带 "HeadlessChrome"，前端指纹会直接记成 Chrome Headless。
     // 用真 Chrome 的 UA 覆盖，别的字段（UA-CH、WebGL）本来就不带 headless 标记。
-    userAgent: HEADED
+    userAgent: USE_FF || HEADED
       ? undefined
       : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
     viewport: HEADED ? null : { width: 1440 + Math.floor(Math.random() * 60), height: 900 },
@@ -99,7 +113,7 @@ export async function newSession(jar, { uid } = {}) {
     extraHTTPHeaders: { 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' },
     storageState: state,
   });
-  await ctx.addInitScript(STEALTH);
+  await ctx.addInitScript(USE_FF ? FF_STEALTH : STEALTH);
   if (jar) await ctx.addCookies(jar.toPlaywrightCookies());
   const page = await ctx.newPage();
 

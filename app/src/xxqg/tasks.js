@@ -1,5 +1,10 @@
 import { config } from '../config.js';
 import { newSession, dwell, jitter, sleep, clearCaptcha, safeClick } from './browser.js';
+import * as plain from './plain.js';
+
+// 每日答题的滑块只有「无 CDP 的普通 Chrome + 真实 OS 输入」能过（见 docs/HANDOFF.md）。
+// 默认在 Windows 本机走这条路；关掉用 XXQG_PLAIN_DAILY=0。
+const USE_PLAIN_DAILY = !/^(0|false|no)$/i.test(process.env.XXQG_PLAIN_DAILY || '1') && process.platform === 'win32';
 
 const ARTICLE_FEEDS = [
   'https://www.xuexi.cn/lgdata/35il6fpn0ohq.json',
@@ -175,6 +180,21 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
   if (!task) return `${cfg.name}今天没出现在积分项里，跳过`;
   if (task.done >= task.max) return `${cfg.name}已满分，跳过`;
 
+  const note = progress.note || (() => {});
+  if (kind === 'daily' && USE_PLAIN_DAILY && uid && jar) {
+    try {
+      note('[plain] 每日答题走无 CDP 通道（真实鼠标过滑块）');
+      const r = await plain.runDaily(uid, jar);
+      if (r.ok) {
+        note(`[plain] 每日答题作答 ${r.answered} 题，已交卷`);
+        return `${cfg.name}完成（无 CDP 通道，滑块已过）`;
+      }
+      note(`[plain] 无 CDP 通道没成功：${r.why || '未知'}，回退 Playwright 通道`);
+    } catch (e) {
+      note(`[plain] 无 CDP 通道异常：${e.message}，回退 Playwright 通道`);
+    }
+  }
+
   const { page, close } = await newSession(jar, { uid });
   const log = progress.note || (() => {});
   // 进卷子：从积分页点「去答题」，周答/专项再挑一套没作答的
@@ -184,8 +204,18 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
     await clearCaptcha(page);
     const card = page.locator('.my-points-card', { hasText: cfg.name }).first();
     if (!(await card.count())) throw new Error(`页面上没有「${cfg.name}」入口`);
-    await safeClick(page, card.locator('text=去答题').first(), { timeout: 15000 });
-    await page.waitForTimeout(3000 + Math.floor(Math.random() * 1500));
+    const go = card.locator('text=去答题').first();
+    // Firefox 版页面里卡片文案可能是「继续答题 / 已作答」，找不到就直接开卷子
+    if (await go.count()) {
+      await safeClick(page, go, { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(3000 + Math.floor(Math.random() * 1500));
+    } else {
+      await page.goto(`https://pc.xuexi.cn/points/${kind === 'daily' ? 'exam-practice' : kind === 'weekly' ? 'exam-week' : 'exam-special'}.html`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000,
+      });
+      await page.waitForTimeout(3000);
+    }
     await clearCaptcha(page);
     if (kind !== 'daily') {
       const paper = page.locator('button:has-text("开始答题"), button:has-text("未作答")').first();

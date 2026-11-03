@@ -71,3 +71,46 @@ Windows + DSH 沙箱下 Chromium 必须 `danger-full-access`。账号 cookie 在
 - 定时调度（凌晨错峰）、多用户额度/邀请码、前端一键串流程。
 - Docker/部署只写了骨架（`app/Dockerfile`、`app/docker-compose.yml`），没在真机验证过。
 - GitHub 私有库推送（缺凭据）。
+## 2026-11-03 18:00 找到滑块病根：CDP 等同 devtools
+
+对照实验（同一账号、同一网络、同一台机器、同一时间窗，只改一个变量）：
+
+| 条件 | 结果 |
+| --- | --- |
+| Playwright/CDP 附着浏览器，拖滑块 | 每次都 `{"code":403,"message":"slider verify failed"}`，F001 |
+| 同一 cookie 注入**普通 Chrome（无任何调试端口）**，人手级别真实鼠标拖 | **滑块通过，交卷成功，+2 分**，分数从 27 → 29 |
+
+操作方法：把 token/acw_tc/aliyungf_tc 以 Chrome v10（AES-256-GCM + DPAPI 解出的 key，明文前置 sha256(host_key)）直接写进 profile 的 Cookies 库，启动不带 `--remote-debugging-*` 的 Chrome，`pc.xuexi.cn/points/my-points.html` 正常登录。
+
+两个额外坑（都已解决）：
+
+1. Chrome 137+ 起 `--load-extension` 被特性开关关掉，加 `--disable-features=DisableLoadExtensionCommandLineSwitch` 也不够，本机 156 实测仍不生效 → 放弃插件，直接写 Cookies 库。
+2. **cookie 必须 `is_httponly=0`**。写 `1` 时 `pc-api.xuexi.cn/open/api/user/info` 能过（服务端读得到），但点开 `points/*.html` 一律 302 到 `points/login.html`——页面自己的登录判定是 JS 读 cookie（和 `abnormal_exam` 同一套 js-cookie），HttpOnly 的 token 它看不见。
+3. 写 cookie 前 Chrome 必须完全退出，否则写进去的行会被丢弃；`expires_utc` 用整数（BigInt 会被丢）。
+
+由此确定后续方向：**把「交卷 + 滑块」从 CDP 里搬到无调试端口的浏览器**（答题仍可用 Playwright 提速，交卷前关掉 CDP 浏览器，再由原生输入完成最后一步）。这是继「关掉 devtools 就行」之后唯一被实验证实的路子。
+## 2026-11-03 23:35 Firefox 也不行：问题不在 CDP
+
+用 Playwright 自驱的 **Firefox**（Juggler 协议，浏览器里根本没有 CDP/devtools）跑同一套答题逻辑：
+
+- 进页面、查看提示、答题全部正常（`第 6 题 [单选题]` 一路推进）；
+- 到「完成」后的滑块：`[captcha] attempt 1/2/3 sliderX 452 -> 452`，三次回弹，交卷依旧 `slider verify failed`。
+
+结论修正：**F001 不是「有 CDP」触发的**。同一账号下能过的只有一次 —— 那次是「无调试端口的普通 Chrome + 真实 OS 鼠标（SendInput）拖拽」。所以真正的判据是**输入是不是来自操作系统输入栈**（SDK 采集的是 pointer 轨迹/时序/`sourceCapabilities` 这一类），而不是自动化协议本身。
+
+后续唯一线路：普通 Chrome（无 `--remote-debugging-*`）+ 预置 cookie + OS 级鼠标键盘（`scripts/native.ps1`），答题用页面内 JS 读题 + 生成坐标，点击/拖拽全部走 SendInput。
+## 2026-11-03 23:45 每日答题跑通（5/5）
+
+`app/src/xxqg/plain.js` + `app/scripts/native.ps1` 这一套今天实测把每日答题从 2/5 打到 **5/5**（总分 27 → 32）：
+
+1. `seedProfile()`：DPAPI 解 key，把 token/acw_tc/aliyungf_tc 以 Chrome v10 写进 `data/plain/<uid>`（`is_httponly=0`）。
+2. `open()`：**不带任何 `--remote-debugging-*`** 启动 Chrome，`MoveWindow(0,0,2800,1700)`（2x 屏，坐标=物理像素）。
+3. 读页面：地址栏拼 `javascript:void(...)`（分三段粘贴：正文 / `:` / `javascript`，避开 Chrome 剥 scheme 和中文输入法全角冒号），结果写 `document.title`，Node 侧读窗口标题。
+4. **答案来源就是页面自己的「查看提示」**：点 `.q-footer-answer-tip-wrap .tips` 后，`div.answer` 里出现 `正确答案：B` + 解析。
+5. 点击/拖拽全部走 `scripts/native.ps1`（`SetProcessDPIAware` + `SetCursorPos`/`mouse_event`），即真实 OS 输入。
+6. `.action-row button:last-child` 先 `scrollIntoView({block:'center'})` 再取矩形，否则 2x 屏下按钮 y 会超出窗口高度、点到桌面上。
+7. 完成 → 滑块 `#aliyunCaptcha-sliding-slider` 拖到 `#aliyunCaptcha-sliding-body` 右缘（34 步 / ~900ms）→ **通过**，分数落库。
+
+同一路径在 Firefox（无 CDP）里拖滑块仍然失败，所以判据是「输入来自 OS 输入栈」，不是协议。
+
+踩过并已修的坑：`javascript:` 返回值是字符串会替换整页（必须 `void()` 包裹）；PowerShell 5.1 非 DPI 感知导致坐标被虚拟化；ps1 里非 ASCII 注释会让 PowerShell 解析失败（已改 ASCII 注释 + BOM）；`--load-extension` 在 Chrome 156 失效。
