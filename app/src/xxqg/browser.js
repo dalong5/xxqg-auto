@@ -114,28 +114,42 @@ export async function newSession(jar, { uid } = {}) {
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const jitter = (base, spread = 4000) => base + Math.floor(Math.random() * spread);
 
+const CAPTCHA_DIALOG = '#JS_aliyun-captcha-dialog.show';
+// 阿里云两套滑块皮肤，按钮和轨道的 id 不一样
+const SLIDER_BUTTONS = ['#aliyunCaptcha-sliding-slider', '#nc_1_n1z', '.aliyunCaptcha-sliding-slider'];
+const SLIDER_TRACKS = ['#aliyunCaptcha-sliding-body', '#nc_1__scale_text', '#aliyunCaptcha-sliding-wrapper'];
+
+async function firstVisible(page, selectors) {
+  for (const sel of selectors) {
+    const loc = page.locator(sel).first();
+    if (await loc.count()) {
+      const box = await loc.boundingBox().catch(() => null);
+      if (box) return { loc, box };
+    }
+  }
+  return null;
+}
+
 /**
  * 阿里云滑块。出现就拖过去，拖动走缓动 + 抖动，末尾还回弹一下。
  * 返回是否已经清掉。
  */
 export async function clearCaptcha(page) {
-  const dialog = page.locator('#JS_aliyun-captcha-dialog.show').first();
-  if (!(await dialog.count())) return true;
+  if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
 
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const btn = page.locator('#nc_1_n1z').first();
-    if (!(await btn.count())) {
+    const slider = await firstVisible(page, SLIDER_BUTTONS);
+    const track = await firstVisible(page, SLIDER_TRACKS);
+    if (!slider || !track) {
       // 不是滑块形态（弹窗/图片），点空白处关掉试试
       await page.mouse.click(10, 10).catch(() => {});
       await sleep(800);
-      if (!(await page.locator('#JS_aliyun-captcha-dialog.show').count())) return true;
+      if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
       continue;
     }
-    const box = await btn.boundingBox().catch(() => null);
-    const track = await page.locator('#nc_1__scale_text').first().boundingBox().catch(() => null);
-    if (!box || !track) return false;
 
-    const distance = (track.width - box.width) * (0.95 + Math.random() * 0.03);
+    const { box } = slider;
+    const distance = Math.max(20, track.box.width - box.width - 2) * (0.97 + Math.random() * 0.02);
     const startX = box.x + box.width / 2;
     const startY = box.y + box.height / 2;
     await page.mouse.move(startX, startY).catch(() => {});
@@ -157,21 +171,71 @@ export async function clearCaptcha(page) {
     await page.mouse.up().catch(() => {});
     await sleep(1600);
 
-    if (!(await page.locator('#JS_aliyun-captcha-dialog.show').count())) return true;
+    if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
+
+    // 有的皮肤不吃 CDP 鼠标事件，滑块根本没动 → 改派指针事件
+    const after = await slider.loc.boundingBox().catch(() => null);
+    console.log('[captcha] attempt %d sliderX %s -> %s', attempt, Math.round(box.x), after ? Math.round(after.x) : 'null');
+    if (after && Math.abs(after.x - box.x) < 3) {
+      await dragByPointerEvents(page, startX, startY, distance);
+      await sleep(1800);
+      if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
+      const after2 = await slider.loc.boundingBox().catch(() => null);
+      console.log('[captcha] pointer fallback sliderX %s', after2 ? Math.round(after2.x) : 'null');
+    }
+
     console.log('[captcha] 第 %d 次没过，重试', attempt);
     await sleep(1200);
   }
-  return !(await page.locator('#JS_aliyun-captcha-dialog.show').count());
+  return !(await page.locator(CAPTCHA_DIALOG).count());
 }
 
-/** 点击；被验证码挡住就先过验证码再点 */
+/** 兜底：在页面里直接派发 pointerdown/pointermove/pointerup */
+async function dragByPointerEvents(page, startX, startY, distance) {
+  await page
+    .evaluate(
+      async ([sx, sy, dist]) => {
+        const el = document.querySelector('#aliyunCaptcha-sliding-slider, #nc_1_n1z');
+        if (!el) return;
+        const fire = (type, x, y) => {
+          const ev = new PointerEvent(type, {
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+            buttons: type === 'pointerup' ? 0 : 1,
+            pointerId: 1,
+            pointerType: 'mouse',
+            isPrimary: true,
+          });
+          (type === 'pointerdown' ? el : document).dispatchEvent(ev);
+        };
+        fire('pointerdown', sx, sy);
+        for (let i = 1; i <= 30; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((r) => setTimeout(r, 20));
+          fire('pointermove', sx + (dist * i) / 30, sy);
+        }
+        await new Promise((r) => setTimeout(r, 300));
+        fire('pointerup', sx + dist, sy);
+      },
+      [startX, startY, distance],
+    )
+    .catch(() => {});
+  await sleep(200);
+}
+
+/** 点击；被验证码挡住就先过验证码再点；再不济强制派发 */
 export async function safeClick(page, locator, opts = {}) {
   try {
-    return await locator.click({ timeout: 8000, ...opts });
+    return await locator.click({ timeout: 6000, ...opts });
   } catch (e) {
-    if (!(await page.locator('#JS_aliyun-captcha-dialog.show').count())) throw e;
-    await clearCaptcha(page);
-    return locator.click({ timeout: 15000, ...opts });
+    if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) await clearCaptcha(page);
+    try {
+      return await locator.click({ timeout: 8000, ...opts });
+    } catch {
+      return locator.click({ force: true, ...opts });
+    }
   }
 }
 

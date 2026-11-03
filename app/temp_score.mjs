@@ -1,0 +1,15 @@
+﻿import { chromium } from 'playwright';
+import { DatabaseSync } from 'node:sqlite';
+const d = new DatabaseSync('data/app.db');
+const jar = JSON.parse(d.prepare("select jar from logins where status='done' order by created_at desc limit 1").get().jar);
+const cookies = Object.entries(jar).map(([name, value]) => ({ name, value, domain: '.xuexi.cn', path: '/' }));
+const b = await chromium.launch({ channel: 'chrome', headless: true });
+const ctx = await b.newContext();
+await ctx.addCookies(cookies);
+const p = await ctx.newPage();
+await p.goto('https://pc.xuexi.cn/points/my-points.html', { waitUntil: 'domcontentloaded' });
+await p.waitForTimeout(2500);
+const raw = await p.evaluate(async () => (await (await fetch('https://pc-proxy-api.xuexi.cn/delegate/score/days/listScoreProgress?sence=score&deviceType=2', { credentials: 'include' })).json()));
+for (const t of raw.data.taskProgress) console.log(t.title, t.currentScore + '/' + t.dayMaxScore, t.taskCode.join(','));
+console.log('total', raw.data.totalScore);
+await b.close();

@@ -135,9 +135,33 @@ async function readTips(page) {
   const tips = [...html.matchAll(/<font[^>]*>([\s\S]*?)<\/font>/g)]
     .map((m) => m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim())
     .filter(Boolean);
-  await page.mouse.click(20, 20).catch(() => {});
-  await page.waitForTimeout(300);
+  // 弹层会盖住下面的选项，必须关掉，否则后面的点击全被吞掉
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.locator('.q-header').first().click({ force: true }).catch(() => {});
+  await page.waitForTimeout(250);
   return tips;
+}
+
+/** 把还空着的空位随便用剩余词块填满，不然交不上去 */
+async function fillEmptyBlanks(page) {
+  for (let round = 0; round < 12; round++) {
+    const empty = await page
+      .evaluate(() => {
+        const boxes = [...document.querySelectorAll('.click-box')].filter((e) => !e.innerText.trim());
+        if (!boxes.length) return 0;
+        boxes[0].click();
+        return boxes.length;
+      })
+      .catch(() => 0);
+    if (!empty) return true;
+    await page.waitForTimeout(250);
+    const chips = page.locator('.fill-answer');
+    const n = await chips.count();
+    if (!n) return false;
+    await safeClick(page, chips.nth(Math.floor(Math.random() * n))).catch(() => {});
+    await page.waitForTimeout(250);
+  }
+  return false;
 }
 
 /**
@@ -188,28 +212,49 @@ export async function quiz(kind, { jar, progress, uid }) {
       const tips = await readTips(page);
 
       if (category.includes('点选')) {
-        // 点选填空：.click-box 是空位，.fill-answer 是词块；先点空位再点词块
+        // 点选填空：.click-box 是空位，.fill-answer 是词块。
+        // 提示可能是一整段（"根据事实"），要按剩余字符串贪心匹配词块。
         const blanks = page.locator('.click-box');
         const total = await blanks.count();
+        const chips = page.locator('.fill-answer');
+        const chipTexts = (await chips.allInnerTexts().catch(() => [])).map((s) => s.trim());
+        let rest = tips.join('').trim();
+        const used = new Set();
         for (let i = 0; i < total; i++) {
-          const word = tips[i] ?? tips[tips.length - 1];
-          if (!word) break;
           await safeClick(page, blanks.nth(i)).catch(() => {});
-          await page.waitForTimeout(200 + Math.floor(Math.random() * 250));
-          const chip = page.locator('.fill-answer').filter({ hasText: new RegExp(`^\\s*${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`) }).first();
-          if (!(await chip.count())) {
-            log(`词块没找到：${word}`);
+          await page.waitForTimeout(180 + Math.floor(Math.random() * 220));
+          if (!rest) continue;
+          let pick = -1;
+          let best = 0;
+          chipTexts.forEach((text, idx) => {
+            if (!text || used.has(idx) || text.length <= best) return;
+            if (rest.startsWith(text)) {
+              pick = idx;
+              best = text.length;
+            }
+          });
+          if (pick < 0) {
+            chipTexts.forEach((text, idx) => {
+              if (!text || used.has(idx) || pick >= 0) return;
+              if (rest.includes(text)) pick = idx;
+            });
+          }
+          if (pick < 0) {
+            log(`词块没匹配上：${rest.slice(0, 8)}`);
             continue;
           }
-          await safeClick(page, chip).catch(() => {});
-          await page.waitForTimeout(300 + Math.floor(Math.random() * 350));
+          used.add(pick);
+          await safeClick(page, chips.nth(pick)).catch(() => {});
+          rest = rest.slice(chipTexts[pick].length);
+          await page.waitForTimeout(280 + Math.floor(Math.random() * 320));
         }
       } else if (category.includes('填空')) {
         const blanks = page.locator('.q-body input');
         const count = await blanks.count();
         const flat = tips.length === 1 && count > 1 ? tips[0].split(/[,、；;]/) : tips;
         for (let i = 0; i < count; i++) {
-          if (flat[i]) await blanks.nth(i).fill(flat[i].trim()).catch(() => {});
+          const value = flat[i] || flat[flat.length - 1] || '无';
+          await blanks.nth(i).fill(value.trim()).catch(() => {});
         }
       } else if (tips.length) {
         const options = page.locator('.q-answer.choosable');
@@ -239,13 +284,22 @@ export async function quiz(kind, { jar, progress, uid }) {
 
       await page.waitForTimeout(400 + Math.floor(Math.random() * 500));
 
-      // 最后一题会出现「交 卷」
-      const submit = page.locator('.action-row button:has-text("交")').first();
+      // 最后一题的按钮是「完 成」（有的卷子是「交 卷」），点了就结束
+      const submit = page.locator('.action-row button:has-text("交"), .action-row button:has-text("完")').first();
       if (await submit.count()) {
         await safeClick(page, submit).catch(() => {});
-        await page.waitForTimeout(1200);
+        await page.waitForTimeout(1500);
         const confirm = page.locator('.ant-modal button:has-text("确")').first();
         if (await confirm.count()) await safeClick(page, confirm).catch(() => {});
+        await page.waitForTimeout(1200);
+        // 出现解析说明这题已提交；再确认一次有没有独立交卷按钮
+        const final = page.locator('button:has-text("交卷"), button:has-text("交 卷"), button:has-text("提交")').first();
+        if (await final.count()) {
+          await safeClick(page, final).catch(() => {});
+          await page.waitForTimeout(1000);
+          const c2 = page.locator('.ant-modal button:has-text("确")').first();
+          if (await c2.count()) await safeClick(page, c2).catch(() => {});
+        }
         log('已交卷');
         submitted = true;
         break;
@@ -253,63 +307,170 @@ export async function quiz(kind, { jar, progress, uid }) {
 
       const next = page.locator('.action-row > button').first();
       if (!(await next.count())) break;
+      if (n >= 4) log('[dbg] ' + (await page.locator('.action-row').first().innerHTML().catch(() => '')).replace(/\\s+/g, ' ').slice(0, 160) + ' modal=' + (await page.locator('.ant-modal').count()));
 
       // 没提示 / 没匹配上时按钮是禁用的，先补选，别卡死
-      for (let t = 0; t < 3; t++) {
+      for (let t = 0; t < 6; t++) {
         if (!(await next.isDisabled().catch(() => true))) break;
-        if (t === 0) await clearCaptcha(page);
+        await clearCaptcha(page);
+        const capOn = await page.locator('#JS_aliyun-captcha-dialog.show').count();
         const options = page.locator('.q-answer.choosable');
         const count = await options.count();
+        const chosen = await page.locator('.q-answer.chosen').count();
+        log(`[补选${t + 1}] 选项${count} 已选${chosen} 验证码${capOn ? '有' : '无'}`);
         if (category.includes('点选') || !count) {
           const blanks = page.locator('.click-box');
           const bn = await blanks.count();
           if (!bn) break;
-          log('词块没点上，按 DOM 顺序把词块都点一遍');
           const chips = page.locator('.fill-answer');
           const cn = await chips.count();
-          for (let k = 0; k < cn; k++) await safeClick(page, chips.nth(k)).catch(() => {});
-          await safeClick(page, blanks.nth(Math.floor(Math.random() * bn))).catch(() => {});
-        } else {
-          log('没匹配到答案，随机选一个');
-          await safeClick(page, options.nth(Math.floor(Math.random() * count))).catch(() => {});
+          if (!cn) break;
+          // 空位挨个试词块，按钮点亮的瞬间就停
+          let lit = false;
+          for (let b = 0; b < bn && !lit; b++) {
+            const filled = (await blanks.nth(b).innerText().catch(() => '')).trim();
+            if (filled) continue;
+            for (let k = 0; k < cn && !lit; k++) {
+              await safeClick(page, blanks.nth(b)).catch(() => {});
+              await safeClick(page, chips.nth(k)).catch(() => {});
+              await page.waitForTimeout(320);
+              if (!(await next.isDisabled().catch(() => true))) lit = true;
+              else {
+                const now = (await blanks.nth(b).innerText().catch(() => '')).trim();
+                if (now) {
+                  await safeClick(page, blanks.nth(b)).catch(() => {});
+                  await page.waitForTimeout(160);
+                }
+              }
+            }
+          }
+        } else if (chosen === 0) {
+          // 只在没选中时补点，避免把已选的又点掉
+          await safeClick(page, options.nth(t % count)).catch(() => {});
         }
-        await page.waitForTimeout(600);
+        await page.waitForTimeout(700);
       }
       if (await next.isDisabled().catch(() => true)) {
         log('确定按钮点不亮，跳过这题');
         break;
       }
 
+      if (await next.isDisabled().catch(() => true)) await fillEmptyBlanks(page);
       await safeClick(page, next).catch(() => {});
       answered++;
-      // 等题干真的换掉，别用固定 sleep 误判成卡住
-      const changed = await page
-        .waitForFunction(
-          (prev) => (document.querySelector('.q-body')?.innerText || '').replace(/\s+/g, ' ').slice(0, 50) !== prev,
-          question,
-          { timeout: 15000 },
-        )
-        .then(() => true)
-        .catch(() => false);
+      await page.waitForTimeout(400);
+      // 弹确认框（最后一题常见）就直接确认
+      const confirmBox = page.locator('.ant-modal button:has-text("确")').first();
+      if (await confirmBox.count()) {
+        await safeClick(page, confirmBox).catch(() => {});
+        log('已交卷');
+        submitted = true;
+        break;
+      }
+      // 等换题；最后一题答完按钮会变「完 成」，或页面直接离开答题区
+      let changed = false;
+      let finished = false;
+      for (let k = 0; k < 24 && !changed; k++) {
+        const label = (await next.innerText().catch(() => '')).replace(/\s+/g, '');
+        if (label.includes('完')) {
+          finished = true;
+          break;
+        }
+        if (!(await body.count())) {
+          finished = true;
+          break;
+        }
+        const now = (await body.innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 50);
+        if (now !== question) changed = true;
+        else await page.waitForTimeout(500);
+      }
+      if (finished) {
+        // 最后一题点完会再弹一次滑块，不处理「完成」点不动
+        const finish = page.locator('.action-row button:has-text("完"), button:has-text("交卷")').first();
+        for (let t = 0; t < 3; t++) {
+          await clearCaptcha(page);
+          if (!(await finish.count())) break;
+          await safeClick(page, finish).catch(() => {});
+          await page.waitForTimeout(1500);
+          const confirm3 = page.locator('.ant-modal button:has-text("确")').first();
+          if (await confirm3.count()) {
+            await safeClick(page, confirm3).catch(() => {});
+            await page.waitForTimeout(1200);
+          }
+          const label = (await finish.innerText().catch(() => '')).replace(/\s+/g, '');
+          if (!label.includes('完')) break;
+        }
+        // 滑块死活塞不过就先关掉，有些页面关掉后仍能交
+        if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) {
+          await page.locator('#JS_aliyun-captcha-close-btn').click().catch(() => {});
+          await page.waitForTimeout(600);
+          await safeClick(page, finish).catch(() => {});
+          await page.waitForTimeout(2500);
+          log('验证码关掉后重试完成');
+          // 阿里云风控把设备判成 F001 时怎么拖都过不了：清掉 abnormal_exam 再点一次，
+          // 客户端会跳过滑块直接 POST（服务端仍校验 header，所以只能算再一次机会）
+          if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) {
+            await page.locator('#JS_aliyun-captcha-close-btn').click().catch(() => {});
+            await page.evaluate(() => {
+              document.cookie = 'abnormal_exam=1; domain=.xuexi.cn; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT';
+            }).catch(() => {});
+            await safeClick(page, finish).catch(() => {});
+            await page.waitForTimeout(2500);
+            const still = await page.locator('#JS_aliyun-captcha-dialog.show').count();
+            log(still ? '[captcha-blocked] 滑块连续失败，本轮答题分拿不到' : '跳过滑块后重试完成');
+          }
+        } else {
+          log('已交卷');
+        }
+        submitted = true;
+        break;
+      }
       if (!changed) {
         const tail = page.locator('.action-row button:has-text("交")').first();
-        if (!(await tail.count())) {
-          log('题干一直没变，收工');
+        if (await tail.count()) continue;
+        // 点选填空有空位没填满时，确定会点了不生效，先补满
+        await fillEmptyBlanks(page);
+        log('题干一直没变，补填空位后再点一次确定');
+        await safeClick(page, next).catch(() => {});
+        const confirm2 = page.locator('.ant-modal button:has-text("确")').first();
+        if (await confirm2.count()) {
+          await safeClick(page, confirm2).catch(() => {});
+          submitted = true;
+          log('已交卷');
+          break;
+        }
+        const tail2 = page.locator('.action-row button:has-text("交")').first();
+        if (!(await tail2.count())) {
+          log('还是没反应，收工');
           break;
         }
       }
       await page.waitForTimeout(500 + Math.floor(Math.random() * 700));
     }
 
-    // 兜底：还停在题目页就直接交卷，不然一分都不给
+    // 兜底：没交上卷就再来一遍，不然一分都不给
     if (!submitted) {
-      const submit = page.locator('.action-row button:has-text("交")').first();
-      if (await submit.count()) {
-        await safeClick(page, submit).catch(() => {});
-        await page.waitForTimeout(1200);
+      for (let attempt = 0; attempt < 3 && !submitted; attempt++) {
+        const submit = page.locator('.action-row button:has-text("交")').first();
+        if (await submit.count()) {
+          await safeClick(page, submit).catch(() => {});
+        } else {
+          const any = page.locator('.action-row button:not([disabled])').first();
+          if (!(await any.count())) break;
+          await safeClick(page, any).catch(() => {});
+        }
+        await page.waitForTimeout(1500);
         const confirm = page.locator('.ant-modal button:has-text("确")').first();
-        if (await confirm.count()) await safeClick(page, confirm).catch(() => {});
-        log('兜底交卷');
+        if (await confirm.count()) {
+          await safeClick(page, confirm).catch(() => {});
+          log('兜底交卷');
+          submitted = true;
+          break;
+        }
+        if (!(await page.locator('.q-body').count())) {
+          log('已离开答题页，视为交卷');
+          submitted = true;
+        }
       }
     }
 

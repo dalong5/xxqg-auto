@@ -52,6 +52,42 @@
 
 未完成：**点选填空**（选项不是 `input`，是词块，要靠点击顺序填）。当前代码会随机补选并可能答错。
 
+### 交卷接口与滑块验证码（已逆向，2026-11-03）
+
+交卷是纯 HTTP，但被阿里云滑块挡着：
+
+| 项 | 值 |
+| --- | --- |
+| 每日答题 | `POST /api/exam/service/practice/quizSubmitV3` |
+| 每周答题 | `POST /api/exam/service/practice/weekPracticeSubmitV3` |
+| 专项答题 | `POST /api/exam/service/detail/submitV3` |
+| 载荷 | `{uniqueId, questions:[{questionId, answers:[{answerId, value}], correct}], usedTime}` |
+| 验证头 | `captchaVerifyParam`（阿里云 `success` 回调给的串） |
+
+页面逻辑（`exam-practice.*.js`）：
+
+```js
+if (!Cookies.get('abnormal_exam')) { /* 直接 POST，不带验证头 */ }
+else { const o = await aliyunCaptcha(); if (o.code === FAIL) return; /* 带 o 作 header POST */ }
+```
+
+- 服务端被风控后**只认**合法 `captchaVerifyParam`，不带就回 `{"code":403,"message":"slider verify failed"}`。
+- 想抓载荷：把 `window.initAliyunCaptcha` 换成 `o => o.success('dummy')`，页面就会带着 dummy 头把真载荷发出去。
+- `abnormal_exam` 是 cookie（js-cookie，`.xuexi.cn`），不是 sessionStorage；删了只会让客户端跳过滑块，服务端照样 403。
+
+滑块链路（`SceneId: 4lku1m5p`，`mode: embed`，360×40）：
+
+| 步 | 请求 |
+| --- | --- |
+| 1 | `InitCaptchaV3`（拿 `CertifyId`、`StaticPath`） |
+| 2 | 拖动时 `Log3`（飞林指纹埋点，`Data` 加密，长度随轨迹点数增长 372→720 字节） |
+| 3 | 松手 `VerifyCaptchaV3`，`CaptchaVerifyParam = {sceneId, certifyId, deviceToken, data}` |
+
+返回 `{"Result":{"VerifyCode":"F001","VerifyResult":false}}`。阿里云错误码：`F001` 风控判定攻击、`F009` 检测到虚拟机、`F008` 重复提交、`T005/T006` 测试/白名单放行。
+
+**已排除**：滑块没动（`style.left` 实测 0→320px、`SimulatedEvent` 全到齐）、轨迹没上报、页面无焦点、DPI 1 vs 2、去掉 `--enable-automation` + 抹 `webdriver`、原生 Chrome 走 CDP、`Asia/Singapore` 时区对齐出口 IP（134.195.100.26，SG）、等 `InitCaptchaV3` 回来再拖、各种拖动时长/步数/起止点。
+**结论**：不是事件问题，是阿里云把本机（新加坡出口 IP）判成风险设备，`F001` 恒过不了；`abnormal_exam` 每次进答题页都被置 1。见 `docs/PROGRESS.md`。
+
 ## 5. 反检测要点
 
 - 用真 Chrome（`channel: 'chrome'`），不要覆盖 UA（`sec-ch-ua` 会露馅）
