@@ -1,0 +1,17 @@
+﻿import { chromium } from 'playwright';
+const b = await chromium.launch({ channel: 'chrome', headless: true });
+const p = await (await b.newContext({ viewport: { width: 1280, height: 900 }, locale: 'zh-CN' })).newPage();
+const errs = [];
+p.on('pageerror', e => errs.push('pageerror: ' + e.message));
+p.on('console', m => { if (m.type() === 'error') errs.push('console: ' + m.text()); });
+await p.goto('http://127.0.0.1:8099/', { waitUntil: 'networkidle' });
+console.log('title:', await p.title());
+await p.click('#btnLogin');
+await p.waitForTimeout(3500);
+const img = await p.locator('#qrbox img').getAttribute('src').catch(() => null);
+console.log('qr img present:', !!img, img ? img.slice(0, 30) : '');
+console.log('status text:', await p.locator('#loginstatus').innerText());
+console.log('rows:', await p.locator('#rows').innerText());
+await p.screenshot({ path: 'data/ui.png', fullPage: false });
+console.log('errs:', errs.length ? errs.join(' | ') : 'none');
+await b.close();

@@ -11,3 +11,7 @@ tmp_*.mjs
 test_*.mjs
 probe*.mjs
 uitest.mjs
+
+# 研究产物强制入库（接手用）
+!app/research/
+!app/research/**

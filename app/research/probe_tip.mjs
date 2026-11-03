@@ -1,0 +1,23 @@
+﻿import { chromium } from 'playwright';
+import { DatabaseSync } from 'node:sqlite';
+const d = new DatabaseSync('data/app.db');
+const jar = JSON.parse(d.prepare("select jar from logins where status='done' order by created_at desc limit 1").get().jar);
+const cookies = Object.entries(jar).map(([name, value]) => ({ name, value, domain: '.xuexi.cn', path: '/' }));
+const b = await chromium.launch({ channel: 'chrome', headless: true });
+const ctx = await b.newContext({ locale: 'zh-CN', viewport: { width: 1440, height: 900 } });
+await ctx.addCookies(cookies);
+const p = await ctx.newPage();
+await p.goto('https://pc.xuexi.cn/points/my-points.html', { waitUntil: 'domcontentloaded' });
+await p.waitForTimeout(3500);
+await p.locator('.my-points-card', { hasText: '每日答题' }).first().locator('text=去答题').first().click();
+await p.waitForTimeout(5000);
+await p.locator('text=查看提示').first().click();
+await p.waitForTimeout(1500);
+const html = await p.evaluate(() => {
+  const pops = [...document.querySelectorAll('.ant-popover, .ant-modal, [class*=popover], [class*=tips]')];
+  return pops.map(e => e.className + ' >>> ' + e.innerHTML.slice(0, 600)).slice(0, 3);
+});
+console.log(html.join('\n---\n') || 'no popover');
+console.log('--- fonts ---');
+console.log(await p.evaluate(() => [...document.querySelectorAll('font')].map(f => f.outerHTML).slice(0, 8).join('\n')));
+await b.close();

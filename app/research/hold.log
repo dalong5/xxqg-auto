@@ -1,0 +1,4 @@
+dialog 1
+SLIDER {"x":412.5,"y":417.5,"width":40,"height":40} {"x":412.5,"y":417.5,"width":360,"height":40}
+READY
+score {"data":{"userId":151285666237,"scoreTypeId":0,"scoreTypeName":null,"score":27.0,"time":0,"scoreV2":"0"},"mess
