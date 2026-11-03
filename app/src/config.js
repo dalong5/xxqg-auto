@@ -2,22 +2,28 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+if (fs.existsSync('.env')) process.loadEnvFile('.env');
+
 const dataDir = path.resolve(process.env.DATA_DIR || 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 
 function loadKey() {
   const p = path.join(dataDir, 'secret.key');
   if (process.env.APP_SECRET) return crypto.createHash('sha256').update(String(process.env.APP_SECRET)).digest();
-  // 多个进程同时启动会抢着创建，用 wx 独占写：谁先建成谁生效，其余回读同一个文件
+  // 先完整写临时文件，再用硬链接原子发布，避免另一个进程读到空密钥。
+  const temporary = `${p}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  const k = crypto.randomBytes(32);
+  fs.writeFileSync(temporary, k.toString('hex'), { mode: 0o600, flag: 'wx' });
   try {
-    const k = crypto.randomBytes(32);
-    fs.writeFileSync(p, k.toString('hex'), { mode: 0o600, flag: 'wx' });
+    fs.linkSync(temporary, p);
     return k;
   } catch (e) {
     if (e.code !== 'EEXIST') throw e;
     const hex = fs.readFileSync(p, 'utf8').trim();
-    if (hex.length !== 64) throw new Error(`secret.key 损坏（长度 ${hex.length}），删掉它会让已存 cookie 全部失效`);
+    if (!/^[a-f0-9]{64}$/i.test(hex)) throw new Error('secret.key 损坏，请恢复密钥备份，不能覆盖现有密钥');
     return Buffer.from(hex, 'hex');
+  } finally {
+    fs.unlinkSync(temporary);
   }
 }
 
@@ -25,6 +31,7 @@ const key = loadKey();
 const keyFingerprint = crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
 
 export const config = {
+  host: process.env.HOST || '127.0.0.1',
   port: Number(process.env.PORT || 8099),
   dataDir,
   key,

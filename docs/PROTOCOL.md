@@ -1,3 +1,5 @@
+> 更新：当前有效结论见 HANDOFF.md；下方部分内容是历史排障记录。当前使用人工验证码接手，不伪造验证头、不自动拖动验证码。
+
 # 协议与选择器备忘（实测 2026-11）
 
 > 这份文件里的每个接口/选择器都是真机跑出来的，改了页面结构要回来更新。
@@ -19,7 +21,7 @@
 
 - `GET https://pc-proxy-api.xuexi.cn/delegate/score/get` 总分
 - `GET https://pc-proxy-api.xuexi.cn/delegate/score/today/query` 今日
-- `GET https://pc-proxy-api.xuexi.cn/delegate/score/days/listScoreProgress?sence=score&deviceType=2` 每项进度（`taskCode` / `currentScore` / `dayMaxScore`）
+- `GET https://pc-proxy-api.xuexi.cn/delegate/score/days/listScoreProgress?sence=score&deviceType=1（完整手机端清单；2 仅含网页任务）` 每项进度（`taskCode` / `currentScore` / `dayMaxScore`）
 
 实测上限：`1` 阅读 12、`2` 视听 12、`1002` 文章时长 12、`1003` 视听时长 12、`9` 登录 1、`6` 每日答题 5、`5` 每周答题、`4` 专项答题。**以 `dayMaxScore` 为准。**
 

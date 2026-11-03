@@ -2,6 +2,9 @@ import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
+import * as db from '../db.js';
+
+const pageJobs = new WeakMap();
 
 let browser = null;
 
@@ -80,7 +83,7 @@ function loadProfile(uid) {
  * 开一个会话。同一个账号复用上次的 localStorage/设备态，避免每次都是"新设备"。
  * 调用方负责 close()。
  */
-export async function newSession(jar, { uid } = {}) {
+export async function newSession(jar, { uid, jobId } = {}) {
   const b = await getBrowser();
   const state = uid ? loadProfile(uid) : undefined;
   const ctx = await b.newContext({
@@ -94,6 +97,7 @@ export async function newSession(jar, { uid } = {}) {
   await ctx.addInitScript(STEALTH);
   if (jar) await ctx.addCookies(jar.toPlaywrightCookies());
   const page = await ctx.newPage();
+  if (jobId) pageJobs.set(page, { jobId, uid });
 
   const close = async () => {
     if (uid) {
@@ -115,114 +119,43 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const jitter = (base, spread = 4000) => base + Math.floor(Math.random() * spread);
 
 const CAPTCHA_DIALOG = '#JS_aliyun-captcha-dialog.show';
-// 阿里云两套滑块皮肤，按钮和轨道的 id 不一样
-const SLIDER_BUTTONS = ['#aliyunCaptcha-sliding-slider', '#nc_1_n1z', '.aliyunCaptcha-sliding-slider'];
-const SLIDER_TRACKS = ['#aliyunCaptcha-sliding-body', '#nc_1__scale_text', '#aliyunCaptcha-sliding-wrapper'];
 
-async function firstVisible(page, selectors) {
-  for (const sel of selectors) {
-    const loc = page.locator(sel).first();
-    if (await loc.count()) {
-      const box = await loc.boundingBox().catch(() => null);
-      if (box) return { loc, box };
-    }
-  }
-  return null;
-}
-
-/**
- * 阿里云滑块。出现就拖过去，拖动走缓动 + 抖动，末尾还回弹一下。
- * 返回是否已经清掉。
- */
+/** 验证码由用户在网站上的实时画面中操作，执行器只转发用户输入。 */
 export async function clearCaptcha(page) {
   if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const slider = await firstVisible(page, SLIDER_BUTTONS);
-    const track = await firstVisible(page, SLIDER_TRACKS);
-    if (!slider || !track) {
-      // 不是滑块形态（弹窗/图片），点空白处关掉试试
-      await page.mouse.click(10, 10).catch(() => {});
-      await sleep(800);
-      if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
-      continue;
+  const job = pageJobs.get(page);
+  if (!job) throw new Error('需要人工验证，请从网站发起任务');
+  if (job.verificationError) throw job.verificationError;
+  db.db.prepare('DELETE FROM verification_actions WHERE job_id = ?').run(job.jobId);
+  const deadline = Date.now() + 5 * 60_000;
+  let lastFrame = 0;
+  try {
+    while (await page.locator(CAPTCHA_DIALOG).count()) {
+      if (Date.now() > deadline) throw new Error('人工验证超时，请重新运行任务');
+      if (db.getJob(job.jobId)?.status !== 'running') throw new Error('任务已停止');
+      if (Date.now() - lastFrame > 1000) {
+        const image = (await page.screenshot({ type: 'jpeg', quality: 65 })).toString('base64');
+        db.addEvent(job.jobId, job.uid, 'verification', { image, ...page.viewportSize() });
+        lastFrame = Date.now();
+      }
+      const actions = db.db.prepare('SELECT * FROM verification_actions WHERE job_id = ? ORDER BY id LIMIT 100').all(job.jobId);
+      for (const action of actions) {
+        db.db.prepare('DELETE FROM verification_actions WHERE id = ?').run(action.id);
+        await page.mouse.move(action.x, action.y);
+        if (action.kind === 'down') await page.mouse.down();
+        if (action.kind === 'up') await page.mouse.up();
+      }
+      await sleep(80);
     }
-
-    const { box } = slider;
-    const distance = Math.max(20, track.box.width - box.width - 2) * (0.97 + Math.random() * 0.02);
-    const startX = box.x + box.width / 2;
-    const startY = box.y + box.height / 2;
-    await page.mouse.move(startX, startY).catch(() => {});
-    await sleep(120 + Math.random() * 180);
-    await page.mouse.down().catch(() => {});
-
-    const steps = 24 + Math.floor(Math.random() * 10);
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const ease = 1 - Math.pow(1 - t, 3); // 先快后慢，像人手
-      const x = startX + distance * ease + (Math.random() - 0.5) * 1.5;
-      const y = startY + (Math.random() - 0.5) * 4;
-      await page.mouse.move(x, y);
-      await sleep(10 + Math.random() * 22);
-    }
-    // 收尾回拉一点，滑块验证爱看这个
-    await page.mouse.move(startX + distance - 3, startY).catch(() => {});
-    await sleep(150);
+    return true;
+  } catch (error) {
+    job.verificationError = error;
+    throw error;
+  } finally {
     await page.mouse.up().catch(() => {});
-    await sleep(1600);
-
-    if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
-
-    // 有的皮肤不吃 CDP 鼠标事件，滑块根本没动 → 改派指针事件
-    const after = await slider.loc.boundingBox().catch(() => null);
-    console.log('[captcha] attempt %d sliderX %s -> %s', attempt, Math.round(box.x), after ? Math.round(after.x) : 'null');
-    if (after && Math.abs(after.x - box.x) < 3) {
-      await dragByPointerEvents(page, startX, startY, distance);
-      await sleep(1800);
-      if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
-      const after2 = await slider.loc.boundingBox().catch(() => null);
-      console.log('[captcha] pointer fallback sliderX %s', after2 ? Math.round(after2.x) : 'null');
-    }
-
-    console.log('[captcha] 第 %d 次没过，重试', attempt);
-    await sleep(1200);
+    db.db.prepare('DELETE FROM verification_actions WHERE job_id = ?').run(job.jobId);
+    db.addEvent(job.jobId, job.uid, 'verification-end');
   }
-  return !(await page.locator(CAPTCHA_DIALOG).count());
-}
-
-/** 兜底：在页面里直接派发 pointerdown/pointermove/pointerup */
-async function dragByPointerEvents(page, startX, startY, distance) {
-  await page
-    .evaluate(
-      async ([sx, sy, dist]) => {
-        const el = document.querySelector('#aliyunCaptcha-sliding-slider, #nc_1_n1z');
-        if (!el) return;
-        const fire = (type, x, y) => {
-          const ev = new PointerEvent(type, {
-            clientX: x,
-            clientY: y,
-            bubbles: true,
-            cancelable: true,
-            buttons: type === 'pointerup' ? 0 : 1,
-            pointerId: 1,
-            pointerType: 'mouse',
-            isPrimary: true,
-          });
-          (type === 'pointerdown' ? el : document).dispatchEvent(ev);
-        };
-        fire('pointerdown', sx, sy);
-        for (let i = 1; i <= 30; i++) {
-          // eslint-disable-next-line no-await-in-loop
-          await new Promise((r) => setTimeout(r, 20));
-          fire('pointermove', sx + (dist * i) / 30, sy);
-        }
-        await new Promise((r) => setTimeout(r, 300));
-        fire('pointerup', sx + dist, sy);
-      },
-      [startX, startY, distance],
-    )
-    .catch(() => {});
-  await sleep(200);
 }
 
 /** 点击；被验证码挡住就先过验证码再点；再不济强制派发 */

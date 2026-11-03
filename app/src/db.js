@@ -1,14 +1,24 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { config } from './config.js';
+import { seal } from './crypto.js';
 
 const file = path.join(config.dataDir, 'app.db');
 export const db = new DatabaseSync(file);
 
 db.exec(`
-  PRAGMA journal_mode = WAL;
   PRAGMA busy_timeout = 5000;
+  PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
+
+  CREATE TABLE IF NOT EXISTS verification_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_verification_job ON verification_actions(job_id);
 
   CREATE TABLE IF NOT EXISTS visitors (
     id TEXT PRIMARY KEY,
@@ -105,6 +115,8 @@ export function updateLogin(sid, patch) {
 }
 
 export const deleteStaleLogins = () => {
+  const expired = db.prepare("UPDATE logins SET status = 'failed', error = '登录会话已过期，请重新生成二维码' WHERE status IN ('starting','init','waiting') AND created_at < ? RETURNING sid").all(now() - 180_000);
+  for (const row of expired) addEvent(row.sid, null, 'failed', { error: '登录会话已过期，请重新生成二维码' });
   // 成功的登录会话保留 7 天：它的 jar 是明文，可作为密钥轮换后恢复 cookie 的备份
   db.prepare("DELETE FROM logins WHERE status = 'done' AND created_at < ?").run(now() - 7 * 86400_000);
   db.prepare("DELETE FROM logins WHERE status IN ('failed','expired') AND created_at < ?").run(now() - 3600_000);
@@ -112,27 +124,38 @@ export const deleteStaleLogins = () => {
 
 // ---------- 用户 ----------
 export function upsertUser({ uid, visitorId, nick, jar, expiresAt }) {
-  db.prepare(
-    `INSERT INTO users (uid, visitor_id, nick, sealed_cookie, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(uid) DO UPDATE SET
-       visitor_id = excluded.visitor_id,
-       nick = excluded.nick,
-       sealed_cookie = excluded.sealed_cookie,
-       expires_at = excluded.expires_at`,
-  ).run(uid, visitorId, nick, jar, expiresAt, now());
-  return getUser(uid);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const existing = getUser(uid);
+    if (existing?.visitor_id !== visitorId && countUsers(visitorId) >= config.maxAccounts) {
+      throw new Error(`最多绑定 ${config.maxAccounts} 个账号`);
+    }
+    db.prepare(
+      `INSERT INTO users (uid, visitor_id, nick, sealed_cookie, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(uid) DO UPDATE SET
+         visitor_id = excluded.visitor_id,
+         nick = excluded.nick,
+         sealed_cookie = excluded.sealed_cookie,
+         expires_at = excluded.expires_at`,
+    ).run(uid, visitorId, nick, seal(typeof jar === 'string' ? JSON.parse(jar) : jar), expiresAt, now());
+    db.exec('COMMIT');
+    return getUser(uid);
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export const getUser = (uid) => db.prepare('SELECT * FROM users WHERE uid = ?').get(uid) || null;
 export const listUsers = (visitorId) =>
   db
-    .prepare('SELECT uid, nick, expires_at, created_at, last_run_at, last_score FROM users WHERE visitor_id = ? ORDER BY created_at DESC')
-    .all(visitorId);
+    .prepare("SELECT uid, nick, expires_at, created_at, last_run_at, CASE WHEN score_day = ? THEN last_score ELSE NULL END AS last_score, (SELECT id FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running') LIMIT 1) AS active_job FROM users WHERE visitor_id = ? ORDER BY created_at DESC")
+    .all(today(), visitorId);
 export const countUsers = (visitorId) =>
   db.prepare('SELECT COUNT(*) AS n FROM users WHERE visitor_id = ?').get(visitorId).n;
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
 
 /** 当天分数只增不减：并发的旧快照不能把新分数冲掉 */
 export const setUserScore = (uid, score) => {
@@ -158,11 +181,25 @@ export const deleteUser = (uid, visitorId) =>
 
 // ---------- 任务队列（跨进程原子领取） ----------
 export function enqueue({ kind, uid = null, visitorId, tasks = null }) {
-  const id = crypto.randomUUID();
-  db.prepare(
-    "INSERT INTO jobs (id, uid, visitor_id, kind, tasks, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
-  ).run(id, uid, visitorId, kind, tasks ? JSON.stringify(tasks) : null, now());
-  return id;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (uid) {
+      const active = db.prepare("SELECT id FROM jobs WHERE uid = ? AND status IN ('queued','running') LIMIT 1").get(uid);
+      if (active) {
+        db.exec('COMMIT');
+        return active.id;
+      }
+    }
+    const id = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO jobs (id, uid, visitor_id, kind, tasks, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
+    ).run(id, uid, visitorId, kind, tasks ? JSON.stringify(tasks) : null, now());
+    db.exec('COMMIT');
+    return id;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 }
 
 export function claimJob(kind, workerId) {

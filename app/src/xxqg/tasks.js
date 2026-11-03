@@ -43,7 +43,7 @@ async function playVideo(page) {
     .catch(() => null);
 }
 
-export async function learn(kind, { jar, progress, shouldStop, uid }) {
+export async function learn(kind, { jar, progress, shouldStop, uid, jobId }) {
   const isVideo = kind === 'video';
   const label = isVideo ? '视听' : '阅读';
   const cap = () => progress().tasks?.[isVideo ? 2 : 1];
@@ -54,7 +54,7 @@ export async function learn(kind, { jar, progress, shouldStop, uid }) {
   }
 
   const items = await feed(kind);
-  const { page, close } = await newSession(jar, { uid });
+  const { page, close } = await newSession(jar, { uid, jobId });
   try {
     await page.goto('https://www.xuexi.cn/notFound.html', { waitUntil: 'domcontentloaded' });
     await clearCaptcha(page);
@@ -106,13 +106,16 @@ export async function learn(kind, { jar, progress, shouldStop, uid }) {
       }
       await sleep(jitter(1500, 2500));
       // 每篇结束立刻回查，分数到顶就收工，别白跑
-      if (progress.refresh) await progress.refresh();
+      await progress.refresh();
       c = cap();
       t = timeCap();
       progress.note?.(`${label}进度 ${c ? c.done : '?'}/${c ? c.max : '?'} 项，${t ? t.done : '?'}/${t ? t.max : '?'} 分`);
       if (c && t && c.done >= c.max && t.done >= t.max) break;
     }
-    return `${label}完成 ${count} 项`;
+    const c = cap();
+    const t = timeCap();
+    if (!c || !t || c.done < c.max || t.done < t.max) throw new Error(`${label}积分未达标，已停止，请检查页面或重新运行`);
+    return `${label}已确认达标，浏览 ${count} 项`;
   } finally {
     await close();
   }
@@ -168,13 +171,14 @@ async function fillEmptyBlanks(page) {
  * 答题：题目页自带「查看提示」，提示里就是答案。
  * 这是官方答案源，比外部题库稳，不用维护答案表。
  */
-export async function quiz(kind, { jar, progress, uid }) {
+export async function quiz(kind, { jar, progress, uid, jobId }) {
   const cfg = EXAM_ENTRY[kind];
   if (!cfg) throw new Error(`未知题型 ${kind}`);
   const task = progress().tasks?.[cfg.code];
-  if (task && task.done >= task.max) return `${cfg.name}已满分，跳过`;
+  if (!task) return `${cfg.name}当前未开放，跳过`;
+  if (task.done >= task.max) return `${cfg.name}已满分，跳过`;
 
-  const { page, close } = await newSession(jar, { uid });
+  const { page, close } = await newSession(jar, { uid, jobId });
   const log = progress.note || (() => {});
   try {
     await page.goto('https://pc.xuexi.cn/points/my-points.html', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -300,7 +304,7 @@ export async function quiz(kind, { jar, progress, uid }) {
           const c2 = page.locator('.ant-modal button:has-text("确")').first();
           if (await c2.count()) await safeClick(page, c2).catch(() => {});
         }
-        log('已交卷');
+        log('已点击提交，正在核对实际积分');
         submitted = true;
         break;
       }
@@ -363,7 +367,7 @@ export async function quiz(kind, { jar, progress, uid }) {
       const confirmBox = page.locator('.ant-modal button:has-text("确")').first();
       if (await confirmBox.count()) {
         await safeClick(page, confirmBox).catch(() => {});
-        log('已交卷');
+        log('已点击提交，正在核对实际积分');
         submitted = true;
         break;
       }
@@ -372,6 +376,11 @@ export async function quiz(kind, { jar, progress, uid }) {
       let finished = false;
       for (let k = 0; k < 24 && !changed; k++) {
         const label = (await next.innerText().catch(() => '')).replace(/\s+/g, '');
+        // 答错后先显示解析，需要再点一次「下一题」才会换题。
+        if (label === '下一题') {
+          await safeClick(page, next);
+          await page.waitForTimeout(500);
+        }
         if (label.includes('完')) {
           finished = true;
           break;
@@ -400,28 +409,8 @@ export async function quiz(kind, { jar, progress, uid }) {
           const label = (await finish.innerText().catch(() => '')).replace(/\s+/g, '');
           if (!label.includes('完')) break;
         }
-        // 滑块死活塞不过就先关掉，有些页面关掉后仍能交
-        if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) {
-          await page.locator('#JS_aliyun-captcha-close-btn').click().catch(() => {});
-          await page.waitForTimeout(600);
-          await safeClick(page, finish).catch(() => {});
-          await page.waitForTimeout(2500);
-          log('验证码关掉后重试完成');
-          // 阿里云风控把设备判成 F001 时怎么拖都过不了：清掉 abnormal_exam 再点一次，
-          // 客户端会跳过滑块直接 POST（服务端仍校验 header，所以只能算再一次机会）
-          if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) {
-            await page.locator('#JS_aliyun-captcha-close-btn').click().catch(() => {});
-            await page.evaluate(() => {
-              document.cookie = 'abnormal_exam=1; domain=.xuexi.cn; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT';
-            }).catch(() => {});
-            await safeClick(page, finish).catch(() => {});
-            await page.waitForTimeout(2500);
-            const still = await page.locator('#JS_aliyun-captcha-dialog.show').count();
-            log(still ? '[captcha-blocked] 滑块连续失败，本轮答题分拿不到' : '跳过滑块后重试完成');
-          }
-        } else {
-          log('已交卷');
-        }
+        await clearCaptcha(page);
+        log('已点击提交，正在核对实际积分');
         submitted = true;
         break;
       }
@@ -436,7 +425,7 @@ export async function quiz(kind, { jar, progress, uid }) {
         if (await confirm2.count()) {
           await safeClick(page, confirm2).catch(() => {});
           submitted = true;
-          log('已交卷');
+          log('已点击提交，正在核对实际积分');
           break;
         }
         const tail2 = page.locator('.action-row button:has-text("交")').first();
@@ -475,7 +464,11 @@ export async function quiz(kind, { jar, progress, uid }) {
     }
 
     await page.waitForTimeout(3000);
-    return `${cfg.name}作答 ${answered} 题`;
+    await clearCaptcha(page);
+    const latest = await progress.refresh();
+    const actual = latest.tasks?.[cfg.code];
+    if (!actual || actual.done < actual.max) throw new Error(`${cfg.name}积分未达标，请查看官方答题结果`);
+    return `${cfg.name}已确认计分 ${actual.done}/${actual.max}`;
   } finally {
     await close();
   }

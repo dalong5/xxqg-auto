@@ -54,6 +54,12 @@
 </header>
 
 <main>
+  <section class="card" id="verification" hidden>
+    <h2>需要你完成安全验证</h2>
+    <p>下方是任务浏览器的实时画面。请在画面中亲自操作验证码，通过后任务继续；5 分钟未完成会停止。</p>
+    <img id="verificationImage" alt="任务浏览器实时画面，请在此操作安全验证" style="width:100%;touch-action:none;user-select:none" draggable="false">
+    <div id="verificationMessage" role="status"></div>
+  </section>
   <section class="card">
     <h2>账号</h2>
     <div id="acct"><div class="hint">还没有绑定账号</div></div>
@@ -68,8 +74,9 @@
 
   <div class="grid">
     <section class="card">
-      <h2>今日任务</h2>
+      <h2>任务进度（含每周项目）</h2>
       <div id="rows"><div class="hint">登录后显示各项进度</div></div>
+      <p class="hint" id="funHint" hidden>趣味答题请在学习强国 APP 的积分页进入并完成今日计分题型，然后点击「查当前积分」确认到账；它不包含在网页一键任务中。</p>
       <div class="actions">
         <button class="primary" id="btnAll">一键跑完今日</button>
         <button id="btnArticle">只阅读</button>
@@ -92,10 +99,39 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const NAMES = { 1:'阅读文章', 2:'视听学习', 9:'每日登录', 1002:'文章时长', 1003:'视听时长', 6:'每日答题', 5:'每周答题', 4:'专项答题' };
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+const NAMES = { 1:'阅读文章', 2:'视听学习', 9:'每日登录', 10:'订阅', 11:'发表观点', 12:'趣味答题', 14:'本地频道', 15:'强国运动（每周）', 1002:'文章时长', 1003:'视听时长', 6:'每日答题', 5:'每周答题', 4:'专项答题' };
 let user = null;
 let stream = null;
+let followedJob = null;
 let loginStream = null;
+let verificationJob = null;
+let verificationSize = null;
+let pointerDown = false;
+let lastMove = 0;
+let inputQueue = Promise.resolve();
+const image = $('verificationImage');
+function sendPointer(event, kind) {
+  if (!verificationJob || !verificationSize) return;
+  const rect = image.getBoundingClientRect();
+  const jobId = verificationJob;
+  const body = JSON.stringify({ kind,
+    x: Math.max(0, Math.min(verificationSize.width, (event.clientX - rect.left) * verificationSize.width / rect.width)),
+    y: Math.max(0, Math.min(verificationSize.height, (event.clientY - rect.top) * verificationSize.height / rect.height)),
+  });
+  inputQueue = inputQueue.then(() => api(`/api/jobs/${jobId}/verification`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body,
+  })).catch(e => { $('verificationMessage').textContent = e.message; });
+}
+image.onpointerdown = event => {
+  event.preventDefault(); pointerDown = true; image.setPointerCapture(event.pointerId); sendPointer(event, 'down');
+};
+image.onpointermove = event => {
+  if (pointerDown && Date.now() - lastMove > 80) { lastMove = Date.now(); sendPointer(event, 'move'); }
+};
+image.onpointerup = image.onpointercancel = event => {
+  if (pointerDown) sendPointer(event, 'up'); pointerDown = false;
+};
 
 const log = (text, cls = '') => {
   const d = document.createElement('div');
@@ -114,6 +150,7 @@ async function api(url, opts) {
 
 function renderScore(score) {
   if (!score) return;
+  $('funHint').hidden = !score.tasks?.[12] || score.tasks[12].done >= score.tasks[12].max;
   $('rows').innerHTML = '';
   for (const [code, t] of Object.entries(score.tasks || {})) {
     const pct = t.max ? Math.min(100, (t.done / t.max) * 100) : 0;
@@ -127,6 +164,7 @@ function renderScore(score) {
 
 function renderAccount() {
   if (!user) {
+    $('funHint').hidden = true;
     $('acct').innerHTML = '<div class="hint">还没有绑定账号</div>';
     $('rows').innerHTML = '<div class="hint">登录后显示各项进度</div>';
     $('btnDel').hidden = true;
@@ -134,8 +172,8 @@ function renderAccount() {
   }
   const s = user.last_score || { today: '-', total: '-' };
   const exp = user.expires_at ? new Date(user.expires_at).toLocaleDateString('zh-CN') : '未知';
-  $('acct').innerHTML = `<div class="acct"><b>${user.nick || user.uid}</b>
-    <span class="hint">登录态有效至 ${exp}</span></div>
+  $('acct').innerHTML = `<div class="acct"><b>${escapeHtml(user.nick || user.uid)}</b>
+    <span class="hint">预计登录有效至 ${exp}</span></div>
     <div class="scores"><div><b>${s.today ?? '-'}</b><span>今日得分</span></div>
     <div><b>${s.total ?? '-'}</b><span>总积分</span></div></div>`;
   $('btnDel').hidden = false;
@@ -146,21 +184,36 @@ async function load() {
   const users = await api('/api/users');
   user = users[0] || null;
   renderAccount();
+  if (user?.active_job && user.active_job !== followedJob) followJob(user.active_job);
 }
 
 // ---------- SSE ----------
 function followJob(jobId) {
+  sessionStorage.setItem('activeJob', jobId);
+  followedJob = jobId;
   stream?.close();
   const es = new EventSource(`/api/jobs/${jobId}/events`);
   stream = es;
   es.onmessage = (e) => {
     const { type, payload } = JSON.parse(e.data);
-    if (type === 'log') log(payload.text, payload.text.startsWith('✔') ? 'ok' : payload.text.startsWith('✘') ? 'bad' : payload.text.startsWith('▶') ? 'step' : 'dim');
-    if (type === 'score') { user.last_score = payload; renderAccount(); }
+    if (['log', 'ok', 'bad', 'step'].includes(type)) log(payload.text, payload.text.startsWith('✔') ? 'ok' : payload.text.startsWith('✘') ? 'bad' : payload.text.startsWith('▶') ? 'step' : 'dim');
+    if (type === 'score' && user) { user.last_score = payload; renderAccount(); }
+    if (type === 'verification') {
+      verificationJob = jobId; verificationSize = payload;
+      $('verification').hidden = false;
+      image.src = `data:image/jpeg;base64,${payload.image}`;
+    }
+    if (type === 'verification-end') { $('verification').hidden = true; verificationJob = null; }
     if (type === 'error') log(payload.error, 'bad');
   };
-  es.addEventListener('end', () => { log('任务结束', 'ok'); es.close(); refresh(); });
-  es.onerror = () => es.close();
+  es.addEventListener('end', e => {
+    const result = JSON.parse(e.data);
+    log(result.status === 'done' ? '任务已完成' : `任务未完成：${result.error || result.status}`, result.status === 'done' ? 'ok' : 'bad');
+    es.close(); followedJob = null; sessionStorage.removeItem('activeJob');
+    $('verification').hidden = true; verificationJob = null;
+    load().catch(e => log(e.message, 'bad'));
+  });
+  es.onerror = () => log('日志连接中断，正在重新连接…', 'dim');
 }
 
 async function run(tasks) {
@@ -188,7 +241,7 @@ $('btnLogin').onclick = async () => {
   $('qrbox').innerHTML = '<span class="hint">生成中…</span>';
   let sid;
   try { ({ sid } = await api('/api/login/start', { method: 'POST' })); }
-  catch (e) { $('qrbox').innerHTML = `<span class="hint">${e.message}</span>`; return; }
+  catch (e) { $('qrbox').innerHTML = `<span class="hint">${escapeHtml(e.message)}</span>`; return; }
 
   const es = new EventSource(`/api/login/${sid}/events`);
   loginStream = es;
@@ -205,7 +258,7 @@ $('btnLogin').onclick = async () => {
       await load();
       if (payload.score) { user.last_score = payload.score; renderAccount(); }
     }
-    if (type === 'failed') { es.close(); $('qrbox').innerHTML = `<span class="hint">${payload.error}</span>`; log(payload.error, 'bad'); }
+    if (type === 'failed') { es.close(); $('qrbox').innerHTML = `<span class="hint">${escapeHtml(payload.error)}</span>`; log(payload.error, 'bad'); }
   };
   es.onerror = () => es.close();
   // 首帧二维码可能早于 SSE 就建好
@@ -226,6 +279,7 @@ $('btnQuiz').onclick = () => run(['daily']);
 $('btnSync').onclick = refresh;
 $('btnClear').onclick = () => ($('log').innerHTML = '');
 $('btnSelf').onclick = async () => {
+  if (user?.active_job) { followJob(user.active_job); log('已接回当前答题任务，请先完成安全验证', 'step'); return; }
   const d = await api('/api/selftest', { method: 'POST' });
   log('开始浏览器自检（不需要账号）', 'step');
   followJob(d.jobId);
@@ -241,7 +295,8 @@ async function beat() {
 }
 beat();
 setInterval(beat, 5000);
-load().catch((e) => log(e.message, 'bad'));
+setInterval(() => load().catch(() => {}), 5000);
+load().then(() => { const active = sessionStorage.getItem('activeJob'); if (active) followJob(active); }).catch((e) => log(e.message, 'bad'));
 </script>
 </body>
 </html>

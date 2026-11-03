@@ -102,8 +102,9 @@ const HANDLERS = {
     const opts = {
       jar,
       uid: job.uid,
+      jobId: job.id,
       progress,
-      shouldStop: () => Date.now() - job.created_at > config.taskBudgetMs,
+      shouldStop: () => Date.now() - (job.started_at || job.created_at) > config.taskBudgetMs,
       refresh: async () => {
         const s = await score(jar).catch(() => null);
         if (s) {
@@ -114,21 +115,30 @@ const HANDLERS = {
         return s;
       },
     };
+    progress.refresh = async () => {
+      const s = await opts.refresh();
+      if (!s) throw new Error('积分回查失败，停止任务，请检查登录状态');
+      return s;
+    };
 
     const current = await score(jar).catch(() => null);
     if (!current) throw new Error('cookie 已失效，请重新扫码');
     state.tasks = current.tasks;
+    db.setUserScore(job.uid, current);
     db.addEvent(job.id, job.uid, 'score', current);
 
     const runners = {
       login: async () => {
-        const { page, ctx } = await newSession(jar, { uid: job.uid });
+        const { page, close } = await newSession(jar, { uid: job.uid, jobId: job.id });
         try {
           await page.goto('https://pc.xuexi.cn/points/my-points.html', { waitUntil: 'domcontentloaded' });
           await page.waitForTimeout(6000);
-          return '已完成登录签到';
+          const s = await progress.refresh();
+          const t = s.tasks?.[9];
+          if (!t || t.done < t.max) throw new Error('登录签到积分未确认');
+          return '登录签到积分已确认';
         } finally {
-          await ctx.close().catch(() => {});
+          await close();
         }
       },
       article: () => learn('article', opts),
@@ -140,8 +150,7 @@ const HANDLERS = {
 
     for (const name of tasks) {
       if (opts.shouldStop()) {
-        log(job, '超出时长预算，提前收尾');
-        break;
+        throw new Error('超出时长预算，任务尚未完成');
       }
       if (!runners[name]) continue;
       log(job, `▶ 开始 ${name}`, 'step');
@@ -150,6 +159,7 @@ const HANDLERS = {
         log(job, `✔ ${name}：${msg}`, 'ok');
       } catch (e) {
         log(job, `✘ ${name} 失败：${e.message || e}`, 'bad');
+        throw e;
       }
       const latest = await score(jar).catch(() => null);
       if (latest) {
@@ -157,15 +167,15 @@ const HANDLERS = {
         db.setUserScore(job.uid, latest);
         db.addEvent(job.id, job.uid, 'score', latest);
       } else {
-        log(job, '登录态失效，后面的任务先不跑了', 'bad');
-        break;
+        throw new Error('登录态失效，任务尚未完成');
       }
       // 任务之间歇一会儿，别像脚本一样连着冲
-      await new Promise((r) => setTimeout(r, 15000 + Math.floor(Math.random() * 30000)));
+      if (name !== tasks.at(-1)) await new Promise((r) => setTimeout(r, 15000 + Math.floor(Math.random() * 30000)));
     }
 
     const final = await patchScore(job);
-    if (final) db.addEvent(job.id, job.uid, 'done', final);
+    if (!final) throw new Error('最终积分回查失败，未确认任务完成');
+    db.addEvent(job.id, job.uid, 'done', final);
   },
 };
 
@@ -233,6 +243,7 @@ export async function startWorker() {
   db.beat(WORKER_ID);
   await getBrowser().catch((e) => console.error('浏览器启动失败:', e.message));
   db.requeueDeadJobs();
+  db.deleteStaleLogins();
   console.log(
     `worker ${WORKER_ID} 就绪：任务并发 ${config.workerConcurrency}，登录并发 ${config.loginConcurrency} key=${config.keyFingerprint}`,
   );

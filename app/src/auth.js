@@ -12,7 +12,9 @@ export function readVisitor(req) {
   const raw = req.headers.cookie || '';
   const hit = raw.split(';').map((s) => s.trim()).find((s) => s.startsWith(NAME + '='));
   if (!hit) return null;
-  const [id, mac] = decodeURIComponent(hit.slice(NAME.length + 1)).split('.');
+  let value;
+  try { value = decodeURIComponent(hit.slice(NAME.length + 1)); } catch { return null; }
+  const [id, mac] = value.split('.');
   if (!id || !mac || sign(id) !== mac) return null;
   return id;
 }

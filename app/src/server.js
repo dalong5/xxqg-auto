@@ -7,7 +7,7 @@ import { ensureVisitor, rateLimit } from './auth.js';
 import { qrContent } from './xxqg/client.js';
 
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', 'loopback');
 app.use(express.json());
 app.use(express.static(path.join(process.cwd(), 'public')));
 app.get('/favicon.ico', (req, res) => res.status(204).end());
@@ -33,9 +33,6 @@ app.get('/healthz', (req, res) => {
 app.post('/api/login/start', (req, res) => {
   const ip = req.ip || 'x';
   if (!rateLimit(`ip:${ip}`, 12, 60_000)) return res.status(429).json({ error: '扫码太频繁，缓一分钟' });
-  if (db.countUsers(req.visitor) >= config.maxAccounts) {
-    return res.status(400).json({ error: `最多绑定 ${config.maxAccounts} 个账号` });
-  }
   const row = db.createLogin(req.visitor);
   res.json({ sid: row.sid });
 });
@@ -84,6 +81,10 @@ function ownUser(req, res) {
   return user;
 }
 
+function ownsJob(job, visitor) {
+  return job && (job.uid ? db.getUser(job.uid)?.visitor_id === visitor : job.visitor_id === visitor);
+}
+
 // 同一账号同时只允许一个任务在跑/排队，避免自己踩自己
 function activeJob(uid) {
   return (
@@ -109,10 +110,27 @@ app.post('/api/users/:uid/run', (req, res) => {
   if (!user) return;
   const asked = Array.isArray(req.body?.tasks) && req.body.tasks.length ? req.body.tasks : ['login', 'article', 'video', 'daily'];
   const tasks = asked.filter((t) => ['login', 'article', 'video', 'daily', 'weekly', 'special'].includes(t));
+  if (!tasks.length || tasks.length !== asked.length) return res.status(400).json({ error: '任务类型无效' });
   const active = activeJob(user.uid);
   if (active) return res.json({ jobId: active.id, tasks, queued: db.queuedCount(), reused: true });
   const id = db.enqueue({ kind: 'run', uid: user.uid, visitorId: req.visitor, tasks });
   res.json({ jobId: id, tasks, queued: db.queuedCount() });
+});
+
+// 人工验证只转发当前任务所属访客的鼠标输入。
+app.post('/api/jobs/:id/verification', (req, res) => {
+  const job = db.getJob(req.params.id);
+  if (!ownsJob(job, req.visitor)) return res.status(404).json({ error: '任务不存在' });
+  const frame = db.db.prepare("SELECT type, payload FROM events WHERE job_id = ? AND type IN ('verification','verification-end') ORDER BY seq DESC LIMIT 1").get(job.id);
+  if (job.status !== 'running' || frame?.type !== 'verification') return res.status(409).json({ error: '当前没有待处理的验证' });
+  const { kind, x, y } = req.body || {};
+  const { width, height } = JSON.parse(frame.payload);
+  if (!['move', 'down', 'up'].includes(kind) || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > width || y > height) {
+    return res.status(400).json({ error: '鼠标坐标无效' });
+  }
+  if (!rateLimit(`verification:${job.id}`, 120, 1000)) return res.status(429).json({ error: '操作过于频繁' });
+  db.db.prepare('INSERT INTO verification_actions (job_id, kind, x, y) VALUES (?, ?, ?, ?)').run(job.id, kind, x, y);
+  res.json({ ok: true });
 });
 
 // 没有账号也能跑的自检任务
@@ -124,21 +142,31 @@ app.post('/api/selftest', (req, res) => {
 // ---------- 任务事件（SSE，带重连续传） ----------
 app.get('/api/jobs/:id/events', (req, res) => {
   const job = db.getJob(req.params.id);
-  if (!job || (job.visitor_id && job.visitor_id !== req.visitor)) return res.status(404).end();
+  if (!ownsJob(job, req.visitor)) return res.status(404).end();
   res.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
     'x-accel-buffering': 'no',
   });
-  let after = Number(req.query.after || 0);
+  let after = Number(req.headers['last-event-id'] || req.query.after || 0);
+  if (!Number.isSafeInteger(after) || after < 0) after = 0;
   let idle = 0;
   const timer = setInterval(() => {
-    for (const e of db.eventsAfter(req.params.id, after)) {
-      after = e.seq;
-      idle = 0;
-      res.write(`id: ${e.seq}\ndata: ${JSON.stringify({ type: e.type, payload: e.payload ? JSON.parse(e.payload) : null })}\n\n`);
+    if (!ownsJob(db.getJob(job.id), req.visitor)) {
+      clearInterval(timer);
+      res.end();
+      return;
     }
+    let batch;
+    do {
+      batch = db.eventsAfter(req.params.id, after);
+      for (const e of batch) {
+        after = e.seq;
+        idle = 0;
+        res.write(`id: ${e.seq}\ndata: ${JSON.stringify({ type: e.type, payload: e.payload ? JSON.parse(e.payload) : null })}\n\n`);
+      }
+    } while (batch.length === 200);
     if (++idle > 30) {
       res.write(': ping\n\n');
       idle = 0;
@@ -158,7 +186,7 @@ app.get('/api/stats', (req, res) => {
   res.json({ queued: db.queuedCount(), jobs, accounts: db.countUsers(req.visitor) });
 });
 
-const server = app.listen(config.port, () => {
+const server = app.listen(config.port, config.host, () => {
   console.log(`API 已启动 http://127.0.0.1:${config.port}（任务由 worker 执行）key=${config.keyFingerprint}`);
 });
 
