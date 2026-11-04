@@ -171,7 +171,7 @@ async function fillEmptyBlanks(page) {
  * 答题：题目页自带「查看提示」，提示里就是答案。
  * 这是官方答案源，比外部题库稳，不用维护答案表。
  */
-export async function quiz(kind, { jar, progress, uid, jobId }) {
+export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
   const cfg = EXAM_ENTRY[kind];
   if (!cfg) throw new Error(`未知题型 ${kind}`);
   const task = progress().tasks?.[cfg.code];
@@ -218,6 +218,15 @@ export async function quiz(kind, { jar, progress, uid, jobId }) {
       if (question === lastQuestion && n > 1) break; // 卡住同一题，别死循环
       lastQuestion = question;
       log(`第 ${n} 题 [${category.replace(/\s+/g, '')}] ${question}`);
+
+      if (shouldStop?.()) throw new Error('任务执行时间已到，停止答题');
+      if (kind === 'daily') {
+        const seconds = 20 + Math.floor(Math.random() * 41);
+        log(`阅读本题，等待 ${seconds} 秒后作答`);
+        await sleep(seconds * 1000);
+        if (shouldStop?.()) throw new Error('任务执行时间已到，停止答题');
+        await clearCaptcha(page);
+      }
 
       const tips = await readTips(page);
 

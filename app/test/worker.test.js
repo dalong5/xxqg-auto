@@ -12,17 +12,23 @@ let scoreCalls = 0;
 let finalScoreFailure = false;
 let riskFailure = '';
 let retried;
+let platformCalls = 0;
+let scoreFailureAt = Infinity;
+const pauses = [];
 const events = [];
 const workerIds = new Set();
 const { seal } = await import('../src/crypto.js');
 mock.module('../src/db.js', { exports: {
   getUser: () => ({ sealed_cookie: seal({ token: 'test' }) }),
+  enqueueScheduledJobs() {}, scheduledJobError: job => job.id === 'stale' ? '往日定时任务已跳过' : null, pauseScheduleForJob: (...args) => pauses.push(args),
   setUserScore() {}, addEvent: (...e) => events.push(e), beat: id => workerIds.add(id), requeueDeadJobs() {}, trimEvents() {}, deleteStaleLogins() {},
   claimJob: () => { const j = nextJob; nextJob = null; return j; },
   finishJob: () => { result = 'done'; }, failJob: (_id, _error, retry) => { result = 'failed'; retried = retry; },
 } });
 mock.module('../src/loginflow.js', { exports: { claimLogin: () => null, driveLogin() {} } });
 mock.module('../src/xxqg/client.js', { exports: { Jar: class {}, score: async () => {
+  platformCalls++;
+  if (platformCalls === scoreFailureAt) throw new Error('HTTP 429 from score refresh');
   if (finalScoreFailure && ++scoreCalls > 1) throw new Error('积分服务不可用');
   return { total: 1, today: 1, tasks: {} };
 } } });
@@ -57,7 +63,23 @@ test('worker wires per-item refresh and reports task failure', async () => {
       while (!result && Date.now() < riskDeadline) await new Promise(r => setTimeout(r, 20));
       assert.equal(result, 'failed');
       assert.equal(retried, false, 'platform risk responses must not be retried as network timeouts');
+      assert.equal(pauses.at(-1)[0].uid, '1');
+      assert.equal(pauses.at(-1)[2], true, 'manual risk failures also stop subsequent automatic jobs');
     }
+    result = null;
+    scoreFailureAt = platformCalls + 2;
+    nextJob = { id: 'score-risk', uid: '1', kind: 'run', tasks: '["article"]', attempts: 1, created_at: Date.now() };
+    const scoreRiskDeadline = Date.now() + 2000;
+    while (!result && Date.now() < scoreRiskDeadline) await new Promise(r => setTimeout(r, 20));
+    assert.equal(result, 'failed');
+    assert.equal(pauses.at(-1)[2], true, 'score refresh must preserve the risk response before pausing automation');
+    result = null;
+    const previousCalls = platformCalls;
+    nextJob = { id: 'stale', uid: '1', kind: 'run', tasks: '["article"]', attempts: 1, created_at: Date.now() };
+    const staleDeadline = Date.now() + 2000;
+    while (!result && Date.now() < staleDeadline) await new Promise(r => setTimeout(r, 20));
+    assert.equal(result, 'failed');
+    assert.equal(platformCalls, previousCalls, 'expired scheduled work must not contact the platform');
     assert.ok(events.some(event => event[3]?.text === '▶ 开始 阅读文章'));
     assert.ok(events.some(event => event[3]?.error?.includes('频繁')));
   } finally { worker.stopWorker(); }

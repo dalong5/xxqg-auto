@@ -14,6 +14,7 @@ let release;
 const barrier = new Promise(resolve => { release = resolve; });
 mock.module('../src/db.js', { exports: {
   getUser: uid => ({ sealed_cookie: seal({ account: uid }) }),
+  enqueueScheduledJobs() {}, scheduledJobError: () => null, pauseScheduleForJob() {},
   setUserScore() {}, addEvent() {}, beat() {}, requeueDeadJobs() {}, trimEvents() {}, deleteStaleLogins() {},
   claimJob: kind => kind === 'run' ? queue.shift() || null : null,
   finishJob: id => finished.add(id), failJob: id => finished.add(id),

@@ -41,6 +41,10 @@
   #log { height:300px; overflow:auto; background:#0b0d11; border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:12px/1.7 ui-monospace,Consolas,monospace; color:#b9c2d0; white-space:pre-wrap; }
   #log .ok { color:var(--grn); } #log .bad { color:#ff6b6b; } #log .step { color:var(--amb); } #log .dim { color:#6b7482; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .week-times { display:grid; grid-template-columns:repeat(auto-fit,minmax(90px,1fr)); gap:10px; margin:12px 0; }
+  .week-times label { display:grid; gap:5px; }
+  input[type="time"] { width:100%; box-sizing:border-box; font:inherit; background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:6px; }
+  fieldset { border:0; padding:0; margin:0; min-width:0; }
   @media (max-width:760px){ .grid { grid-template-columns:1fr; } }
 </style>
 </head>
@@ -74,6 +78,19 @@
       <button id="btnSync">查当前积分</button>
       <button id="btnDel" hidden>解绑账号</button>
     </div>
+  </section>
+
+  <section class="card">
+    <h2>每周自动任务 · 北京时间</h2>
+    <p class="hint">适用于本浏览器绑定的所有账号，每天每账号自动运行一次：签到、阅读、视听、每日答题。尚未实现的订阅、发表观点、本地频道和趣味答题不包含在内。</p>
+    <fieldset id="scheduleFields" disabled>
+      <label><input type="checkbox" id="scheduleEnabled"> 启用自动任务</label>
+      <div class="week-times" id="scheduleTimes"></div>
+      <button id="btnSaveSchedule">保存自动任务计划</button>
+    </fieldset>
+    <p id="scheduleStatus" role="status" aria-live="polite">正在读取计划…</p>
+    <p id="schedulePaused" class="hint" role="status"></p>
+    <p class="hint">关闭网页不影响运行，服务和执行器需要保持在线。登录失效、安全验证或定时任务失败会暂停对应账号，重新扫码后恢复。关闭计划只停止新增任务。</p>
   </section>
 
   <div class="grid">
@@ -157,6 +174,54 @@ async function api(url, opts) {
   if (!r.ok) throw new Error(data.error || `请求未成功，响应状态码 ${r.status}`);
   return data;
 }
+
+['周一', '周二', '周三', '周四', '周五', '周六', '周日'].forEach((day, index) => {
+  const label = document.createElement('label');
+  label.textContent = day;
+  const input = document.createElement('input');
+  input.type = 'time'; input.id = `scheduleTime${index}`; input.required = true;
+  input.setAttribute('aria-label', `${day}自动运行时间`);
+  label.appendChild(input); $('scheduleTimes').appendChild(label);
+});
+let scheduleVersion = 0;
+let scheduleSaving = false;
+let scheduleSnapshot = '';
+let scheduleUpdatedAt = 0;
+function scheduleValue() {
+  return { enabled: $('scheduleEnabled').checked, times: Array.from({ length: 7 }, (_, i) => $(`scheduleTime${i}`).value) };
+}
+function renderSchedule(schedule, fill) {
+  if (fill) {
+    $('scheduleEnabled').checked = schedule.enabled;
+    schedule.times.forEach((time, index) => { $(`scheduleTime${index}`).value = time; });
+    scheduleSnapshot = JSON.stringify(scheduleValue());
+    scheduleUpdatedAt = schedule.updatedAt;
+    $('scheduleFields').disabled = false;
+  }
+  const next = schedule.nextAt ? new Intl.DateTimeFormat('zh-CN', { timeZone: schedule.timeZone, dateStyle: 'medium', timeStyle: 'short' }).format(schedule.nextAt) : '';
+  $('scheduleStatus').textContent = schedule.enabled ? `已启用；下次计划：${next}（北京时间）。待处理问题的账号会跳过。` : '自动任务未启用';
+  $('schedulePaused').textContent = schedule.pausedAccounts.map(paused => {
+    const account = accounts.find(a => a.uid === paused.uid);
+    return `${account?.nick || paused.uid}：自动任务已暂停，${paused.reason}；重新扫码后恢复。`;
+  }).join(' ');
+}
+async function loadSchedule() {
+  if (scheduleSaving) return;
+  const version = ++scheduleVersion;
+  const schedule = await api('/api/schedule');
+  if (version === scheduleVersion) renderSchedule(schedule, $('scheduleFields').disabled || JSON.stringify(scheduleValue()) === scheduleSnapshot);
+}
+$('btnSaveSchedule').onclick = async () => {
+  if (!$('scheduleFields').reportValidity()) return;
+  scheduleSaving = true; ++scheduleVersion;
+  $('scheduleFields').disabled = true;
+  try {
+    const value = { ...scheduleValue(), updatedAt: scheduleUpdatedAt };
+    const schedule = await api('/api/schedule', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
+    renderSchedule(schedule, true);
+  } catch (error) { $('scheduleStatus').textContent = `计划保存失败：${error.message}`; }
+  finally { scheduleSaving = false; $('scheduleFields').disabled = false; }
+};
 
 function renderScore(score) {
   if (!score) return;
@@ -357,6 +422,8 @@ async function beat() {
 beat();
 setInterval(beat, 5000);
 setInterval(() => load().catch(() => {}), 5000);
+loadSchedule().catch(e => { $('scheduleStatus').textContent = e.message; });
+setInterval(() => loadSchedule().catch(() => {}), 20000);
 const savedJob = sessionStorage.getItem('activeJob');
 const savedJobUser = sessionStorage.getItem('activeJobUser');
 api('/api/me').then(me => { maxAccounts = me.maxAccounts; taskNames = me.taskNames || {}; renderAccount(); }).catch(e => log(e.message, 'bad'));

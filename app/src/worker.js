@@ -26,25 +26,35 @@ const tryUnseal = (blob) => {
  * 取账号 cookie。解密失败时从最近的登录会话恢复并重新加密。
  * 这样换过 APP_SECRET、密钥文件被覆盖之后，用户不用重扫码。
  */
-function userJar(uid) {
-  const user = db.getUser(uid);
+function jobUser(job) {
+  const user = db.getUser(job.uid);
   if (!user) throw new Error('用户不存在');
+  if ((job.visitor_id && job.visitor_id !== user.visitor_id) || (job.loginGeneration !== undefined && job.loginGeneration !== user.login_generation)) {
+    throw new Error('账号登录或归属已更新，旧任务已停止，请重新发起任务');
+  }
+  job.loginGeneration = user.login_generation;
+  return user;
+}
+
+function userJar(job) {
+  const user = jobUser(job);
   const opened = tryUnseal(user.sealed_cookie);
   if (opened) return new Jar(opened);
 
   const backup = db.db
     .prepare("SELECT jar FROM logins WHERE uid = ? AND status = 'done' AND jar IS NOT NULL ORDER BY created_at DESC LIMIT 1")
-    .get(uid);
+    .get(job.uid);
   if (!backup?.jar) throw new Error('cookie 无法解密，请重新扫码');
   const jar = new Jar(JSON.parse(backup.jar));
-  db.db.prepare('UPDATE users SET sealed_cookie = ? WHERE uid = ?').run(seal(jar.toJSON()), uid);
-  console.warn(`[repair] ${uid} 的 cookie 解密失败，已从登录会话恢复`);
+  db.db.prepare('UPDATE users SET sealed_cookie = ? WHERE uid = ?').run(seal(jar.toJSON()), job.uid);
+  console.warn(`[repair] ${job.uid} 的 cookie 解密失败，已从登录会话恢复`);
   return jar;
 }
 
 const patchScore = async (job) => {
   if (!job.uid) return null;
-  const s = await score(userJar(job.uid)).catch(() => null);
+  const s = await score(userJar(job));
+  jobUser(job);
   if (s) db.setUserScore(job.uid, s);
   return s;
 };
@@ -93,7 +103,7 @@ const HANDLERS = {
   /** 正式任务 */
   async run(job) {
     const tasks = JSON.parse(job.tasks || '[]');
-    const jar = userJar(job.uid);
+    const jar = userJar(job);
 
     const state = { tasks: {} };
     // tasks.js 的约定：progress() 取当前进度，progress.note 写日志，progress.refresh 现查一次，
@@ -104,9 +114,14 @@ const HANDLERS = {
       uid: job.uid,
       jobId: job.id,
       progress,
-      shouldStop: () => Date.now() - (job.started_at || job.created_at) > config.taskBudgetMs,
+      shouldStop: () => {
+        jobUser(job);
+        return Date.now() - (job.started_at || job.created_at) > config.taskBudgetMs;
+      },
       refresh: async () => {
-        const s = await score(jar).catch(() => null);
+        jobUser(job);
+        const s = await score(jar);
+        jobUser(job);
         if (s) {
           state.tasks = s.tasks;
           db.setUserScore(job.uid, s);
@@ -121,7 +136,8 @@ const HANDLERS = {
       return s;
     };
 
-    const current = await score(jar).catch(() => null);
+    const current = await score(jar);
+    jobUser(job);
     if (!current) throw new Error('cookie 已失效，请重新扫码');
     state.tasks = current.tasks;
     db.setUserScore(job.uid, current);
@@ -161,7 +177,8 @@ const HANDLERS = {
         log(job, `✘ ${taskName(name)} 失败：${userError(e.message || e)}`, 'bad');
         throw e;
       }
-      const latest = await score(jar).catch(() => null);
+      const latest = await score(jar);
+      jobUser(job);
       if (latest) {
         state.tasks = latest.tasks;
         db.setUserScore(job.uid, latest);
@@ -181,13 +198,20 @@ const HANDLERS = {
 
 async function runTaskJob(job) {
   db.addEvent(job.id, job.uid, 'start', { tasks: job.tasks ? JSON.parse(job.tasks) : [job.kind] });
+  const error = db.scheduledJobError(job);
+  if (error) {
+    db.failJob(job.id, error);
+    db.addEvent(job.id, job.uid, 'error', { error });
+    return;
+  }
   try {
     await HANDLERS[job.kind](job);
     db.finishJob(job.id);
   } catch (e) {
     const message = String(e.message || e);
-    const safetyStop = /\b(?:401|403|429)\b|captcha|slider|risk|security.?check|too many requests|rate.?limit|unauthorized|forbidden|验证|风控|账号异常|访问异常|登录.*失效|请求被拒绝/i.test(message);
+    const safetyStop = /\b(?:401|403|429)\b|captcha|slider|risk|security.?check|too many requests|rate.?limit|unauthorized|forbidden|验证|风控|账号异常|访问异常|登录.*失效|cookie.*失效|请求被拒绝/i.test(message);
     const retry = !safetyStop && job.attempts < 2 && /ECONN|timeout|ETIMEDOUT/i.test(message);
+    if (!retry) db.pauseScheduleForJob(job, message, safetyStop);
     db.failJob(job.id, e.message || e, retry);
     db.addEvent(job.id, job.uid, 'error', { error: userError(e.message || e) });
   }
@@ -246,6 +270,7 @@ export async function startWorker() {
   await getBrowser().catch((e) => console.error('浏览器启动失败:', e.message));
   db.requeueDeadJobs();
   db.deleteStaleLogins();
+  db.enqueueScheduledJobs();
   console.log(
     `worker ${WORKER_ID} 就绪：任务并发 ${config.workerConcurrency}，登录并发 ${config.loginConcurrency} key=${config.keyFingerprint}`,
   );
@@ -257,6 +282,7 @@ export async function startWorker() {
     db.requeueDeadJobs();
     db.trimEvents();
     db.deleteStaleLogins();
+    db.enqueueScheduledJobs();
   }, 20_000).unref?.();
 
   setInterval(() => {

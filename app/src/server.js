@@ -6,6 +6,7 @@ import * as db from './db.js';
 import { ensureVisitor, rateLimit } from './auth.js';
 import { qrContent } from './xxqg/client.js';
 import { TASK_NAMES, logText, userError } from './messages.js';
+import { validateSchedule } from './schedule.js';
 
 function eventMessage(event) {
   const payload = event.payload ? JSON.parse(event.payload) : null;
@@ -35,6 +36,23 @@ app.get('/api/me', (req, res) => {
 
 app.get('/healthz', (req, res) => {
   res.json({ ok: true, queued: db.queuedCount(), workers: db.liveWorkers(), at: Date.now() });
+});
+
+function scheduleResponse(visitor) {
+  const schedule = db.getSchedule(visitor);
+  schedule.pausedAccounts = schedule.pausedAccounts.map(account => ({ ...account, reason: userError(account.reason) }));
+  return schedule;
+}
+
+app.get('/api/schedule', (req, res) => res.json(scheduleResponse(req.visitor)));
+app.put('/api/schedule', (req, res) => {
+  const value = { enabled: req.body?.enabled, times: req.body?.times };
+  try { validateSchedule(value); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+  if (!Number.isSafeInteger(req.body.updatedAt) || req.body.updatedAt < 0) return res.status(400).json({ error: '请先读取最新计划再保存' });
+  try { db.saveSchedule(req.visitor, value, Date.now(), req.body.updatedAt); }
+  catch (error) { if (error.status === 409) return res.status(409).json({ error: error.message }); throw error; }
+  res.json(scheduleResponse(req.visitor));
 });
 
 // ---------- 扫码登录 ----------

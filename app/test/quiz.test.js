@@ -7,9 +7,10 @@ import path from 'node:path';
 
 process.env.DATA_DIR = mkdtempSync(path.join(tmpdir(), 'xxqg-quiz-'));
 let page;
+const questionDelays = [];
 mock.module('../src/xxqg/browser.js', { exports: {
   newSession: async () => ({ page, close: async () => {} }),
-  dwell() {}, jitter() {}, sleep: async () => {}, clearCaptcha: async () => true,
+  dwell() {}, jitter() {}, sleep: async ms => { questionDelays.push(ms); }, clearCaptcha: async () => true,
   safeClick: async (_page, locator) => locator.click(),
 } });
 const { quiz } = await import('../src/xxqg/tasks.js');
@@ -32,10 +33,13 @@ test('an incorrect answer can advance through its explanation to the next questi
       </script>`);
     page.goto = async () => {};
     page.waitForTimeout = async () => {};
+    questionDelays.length = 0;
     const progress = Object.assign(() => ({ tasks: { 6: { done: 0, max: 5 } } }), {
       refresh: async () => ({ tasks: { 6: { done: await page.locator('body').getAttribute('data-submitted') === 'yes' ? 5 : 0, max: 5 } } }),
     });
     assert.match(await quiz('daily', { progress }), /已确认计分 5\/5/);
+    assert.equal(questionDelays.length, 2, 'both questions, including the final one, must have a reading delay');
+    assert.ok(questionDelays.every(ms => ms >= 20_000 && ms <= 60_000), 'each question waits 20–60 seconds');
   } finally { await browser.close(); }
 });
 test.after(() => rmSync(process.env.DATA_DIR, { recursive: true, force: true }));

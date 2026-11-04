@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { config } from './config.js';
 import { seal } from './crypto.js';
+import { DEFAULT_TIMES, SCHEDULE_TASKS, validateSchedule, scheduleDay, scheduledAt, nextScheduledAt } from './schedule.js';
 
 const file = path.join(config.dataDir, 'app.db');
 export const db = new DatabaseSync(file);
@@ -80,14 +81,33 @@ db.exec(`
     id TEXT PRIMARY KEY,
     seen_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS schedules (
+    visitor_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL,
+    times TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS scheduled_runs (
+    uid TEXT NOT NULL,
+    run_day TEXT NOT NULL,
+    job_id TEXT NOT NULL UNIQUE,
+    PRIMARY KEY (uid, run_day)
+  );
+  CREATE TABLE IF NOT EXISTS schedule_pauses (
+    uid TEXT PRIMARY KEY,
+    reason TEXT NOT NULL
+  );
 `);
 
-// 老库补列
+// 老库补列，保留已有账号和密钥。
+db.exec('BEGIN IMMEDIATE');
 try {
-  db.exec('ALTER TABLE users ADD COLUMN score_day TEXT');
-} catch {
-  // 已存在
-}
+  const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map(column => column.name));
+  if (!userColumns.has('score_day')) db.exec('ALTER TABLE users ADD COLUMN score_day TEXT');
+  if (!userColumns.has('login_generation')) db.exec('ALTER TABLE users ADD COLUMN login_generation INTEGER NOT NULL DEFAULT 0');
+  db.exec('COMMIT');
+} catch (error) { db.exec('ROLLBACK'); throw error; }
 
 const now = () => Date.now();
 
@@ -137,8 +157,10 @@ export function upsertUser({ uid, visitorId, nick, jar, expiresAt }) {
          visitor_id = excluded.visitor_id,
          nick = excluded.nick,
          sealed_cookie = excluded.sealed_cookie,
-         expires_at = excluded.expires_at`,
+         expires_at = excluded.expires_at,
+         login_generation = users.login_generation + 1`,
     ).run(uid, visitorId, nick, seal(typeof jar === 'string' ? JSON.parse(jar) : jar), expiresAt, now());
+    db.prepare('DELETE FROM schedule_pauses WHERE uid = ?').run(uid);
     db.exec('COMMIT');
     return getUser(uid);
   } catch (error) {
@@ -180,6 +202,14 @@ export const deleteUser = (uid, visitorId) =>
   db.prepare("DELETE FROM users WHERE uid = ? AND visitor_id = ? AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running'))").run(uid, visitorId);
 
 // ---------- 任务队列（跨进程原子领取） ----------
+function insertJob({ kind, uid = null, visitorId, tasks = null }, at = now()) {
+  const id = crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO jobs (id, uid, visitor_id, kind, tasks, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
+  ).run(id, uid, visitorId, kind, tasks ? JSON.stringify(tasks) : null, at);
+  return id;
+}
+
 export function enqueue({ kind, uid = null, visitorId, tasks = null }) {
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -190,16 +220,89 @@ export function enqueue({ kind, uid = null, visitorId, tasks = null }) {
         return active.id;
       }
     }
-    const id = crypto.randomUUID();
-    db.prepare(
-      "INSERT INTO jobs (id, uid, visitor_id, kind, tasks, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
-    ).run(id, uid, visitorId, kind, tasks ? JSON.stringify(tasks) : null, now());
+    const id = insertJob({ kind, uid, visitorId, tasks });
     db.exec('COMMIT');
     return id;
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
+}
+
+// ---------- 定时任务（北京时间，每账号每天最多一次） ----------
+export function getSchedule(visitorId, at = now()) {
+  const row = db.prepare('SELECT * FROM schedules WHERE visitor_id = ?').get(visitorId);
+  const times = row ? JSON.parse(row.times) : [...DEFAULT_TIMES];
+  const enabled = Boolean(row?.enabled);
+  const pausedAccounts = db.prepare('SELECT p.uid, p.reason FROM schedule_pauses p JOIN users u ON u.uid = p.uid WHERE u.visitor_id = ?').all(visitorId);
+  return { enabled, times, updatedAt: row?.updated_at || 0, timeZone: 'Asia/Shanghai', nextAt: enabled ? nextScheduledAt(times, at) : null, pausedAccounts };
+}
+
+export function saveSchedule(visitorId, value, at = now(), expectedUpdatedAt) {
+  validateSchedule(value);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const previous = db.prepare('SELECT updated_at FROM schedules WHERE visitor_id = ?').get(visitorId)?.updated_at || 0;
+    if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== previous) {
+      const error = new Error('计划已在其他页面更改，请刷新网页后再保存');
+      error.status = 409;
+      throw error;
+    }
+    db.prepare(`INSERT INTO schedules (visitor_id, enabled, times, updated_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(visitor_id) DO UPDATE SET enabled = excluded.enabled, times = excluded.times, updated_at = excluded.updated_at`)
+      .run(visitorId, Number(value.enabled), JSON.stringify(value.times), Math.max(at, previous + 1));
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+  return getSchedule(visitorId, at);
+}
+
+export function enqueueScheduledJobs(at = now()) {
+  let queued = 0;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const day = scheduleDay(at);
+    for (const row of db.prepare('SELECT * FROM schedules WHERE enabled = 1').all()) {
+      const due = scheduledAt(JSON.parse(row.times), at);
+      if (at < due || row.updated_at > due) continue;
+      for (const user of db.prepare('SELECT uid, expires_at FROM users WHERE visitor_id = ?').all(row.visitor_id)) {
+        if (db.prepare('SELECT 1 FROM schedule_pauses WHERE uid = ?').get(user.uid)) continue;
+        if (user.expires_at && user.expires_at <= at) {
+          db.prepare('INSERT OR IGNORE INTO schedule_pauses (uid, reason) VALUES (?, ?)').run(user.uid, '登录已过期，请重新扫码后恢复自动任务');
+          continue;
+        }
+        if (db.prepare('SELECT 1 FROM scheduled_runs WHERE uid = ? AND run_day = ?').get(user.uid, day)) continue;
+        if (db.prepare("SELECT 1 FROM jobs WHERE uid = ? AND status IN ('queued','running')").get(user.uid)) continue;
+        const id = insertJob({ kind: 'run', uid: user.uid, visitorId: row.visitor_id, tasks: SCHEDULE_TASKS }, at);
+        db.prepare('INSERT INTO scheduled_runs (uid, run_day, job_id) VALUES (?, ?, ?)').run(user.uid, day, id);
+        addEvent(id, user.uid, 'log', { text: '每周计划已触发，开始执行今日自动任务' });
+        queued++;
+      }
+    }
+    db.exec('COMMIT');
+    return queued;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function scheduledJobError(job, at = now()) {
+  const row = db.prepare('SELECT r.run_day, u.visitor_id FROM scheduled_runs r LEFT JOIN users u ON u.uid = r.uid WHERE r.job_id = ?').get(job.id);
+  if (!row) return null;
+  if (row.visitor_id !== job.visitor_id) return '账号绑定已变更，已跳过原浏览器的定时任务';
+  if (row.run_day < scheduleDay(at)) return '已跳过往日未执行的定时任务，等待今天的计划';
+  return null;
+}
+
+export function pauseScheduleForJob(job, reason, safetyStop) {
+  if (!job.uid || (!safetyStop && !db.prepare('SELECT 1 FROM scheduled_runs WHERE job_id = ?').get(job.id))) return;
+  const user = getUser(job.uid);
+  if (!user) return;
+  const changed = db.prepare(`INSERT INTO schedule_pauses (uid, reason)
+    SELECT uid, ? FROM users WHERE uid = ? AND visitor_id = ? AND login_generation = ?
+    ON CONFLICT(uid) DO UPDATE SET reason = excluded.reason`)
+    .run(String(reason), job.uid, job.visitor_id ?? user.visitor_id, job.loginGeneration ?? user.login_generation).changes;
+  if (changed) addEvent(job.id, job.uid, 'bad', { text: '该账号的自动任务已暂停，请处理问题并重新扫码后恢复' });
 }
 
 export function claimJob(kind, workerId) {
