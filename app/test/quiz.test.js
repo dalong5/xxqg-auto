@@ -39,3 +39,34 @@ test('an incorrect answer can advance through its explanation to the next questi
   } finally { await browser.close(); }
 });
 test.after(() => rmSync(process.env.DATA_DIR, { recursive: true, force: true }));
+
+test('daily entry waits for asynchronously rendered points cards', async () => {
+  const browser = await chromium.launch({ channel: process.env.CHROME_CHANNEL || 'chrome', executablePath: process.env.CHROME_PATH || undefined, headless: true });
+  try {
+    page = await browser.newPage();
+    await page.setContent('<main>积分加载中</main><script>setTimeout(() => { document.querySelector("main").innerHTML = `<div class="my-points-card">每日答题<button onclick="document.body.dataset.entered = \'yes\'">去答题</button></div>`; }, 500);</script>');
+    page.goto = async () => {};
+    page.waitForTimeout = async () => {};
+    const progress = Object.assign(() => ({ tasks: { 6: { done: 0, max: 5 } } }), {
+      refresh: async () => ({ tasks: { 6: { done: await page.locator('body').getAttribute('data-entered') === 'yes' ? 5 : 0, max: 5 } } }),
+    });
+    assert.match(await quiz('daily', { progress }), /已确认计分 5\/5/);
+    assert.equal(await page.locator('body').getAttribute('data-entered'), 'yes');
+  } finally { await browser.close(); }
+});
+
+test('a completed result page does not wait for the removed next button', async () => {
+  const browser = await chromium.launch({ channel: process.env.CHROME_CHANNEL || 'chrome', executablePath: process.env.CHROME_PATH || undefined, headless: true });
+  let timer;
+  try {
+    page = await browser.newPage();
+    await page.setContent('<div class="my-points-card">每日答题<button>去答题</button></div><div class="q-header">单选题</div><div class="q-body">最后一题</div><div class="action-row"><button onclick="document.body.innerHTML = \'答题结果\'">确定</button></div>');
+    page.goto = async () => {};
+    page.waitForTimeout = async () => {};
+    const progress = Object.assign(() => ({ tasks: { 6: { done: 0, max: 5 } } }), {
+      refresh: async () => ({ tasks: { 6: { done: (await page.locator('body').innerText()).includes('答题结果') ? 5 : 0, max: 5 } } }),
+    });
+    const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('仍在等待已被移除的答题按钮')), 1500); });
+    assert.match(await Promise.race([quiz('daily', { progress }), deadline]), /已确认计分 5\/5/);
+  } finally { clearTimeout(timer); await browser.close(); }
+});

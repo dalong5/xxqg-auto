@@ -187,7 +187,13 @@ export async function quiz(kind, { jar, progress, uid, jobId }) {
 
     // 入口是卡片里那个「去答题」，点标题没用
     const card = page.locator('.my-points-card', { hasText: cfg.name }).first();
-    if (!(await card.count())) throw new Error(`页面上没有「${cfg.name}」入口`);
+    log(`等待「${cfg.name}」入口加载…`);
+    try {
+      await card.waitFor({ state: 'visible', timeout: 45000 });
+    } catch (error) {
+      if (error.name !== 'TimeoutError') throw error;
+      throw new Error(`等待「${cfg.name}」入口加载超时，请检查网络或重新扫码登录`);
+    }
     await safeClick(page, card.locator('text=去答题').first(), { timeout: 15000 });
     await page.waitForTimeout(3000 + Math.floor(Math.random() * 1500));
     await clearCaptcha(page);
@@ -315,8 +321,10 @@ export async function quiz(kind, { jar, progress, uid, jobId }) {
 
       // 没提示 / 没匹配上时按钮是禁用的，先补选，别卡死
       for (let t = 0; t < 6; t++) {
+        if (!(await body.count())) break;
         if (!(await next.isDisabled().catch(() => true))) break;
         await clearCaptcha(page);
+        if (!(await body.count())) break;
         const capOn = await page.locator('#JS_aliyun-captcha-dialog.show').count();
         const options = page.locator('.q-answer.choosable');
         const count = await options.count();
@@ -354,6 +362,11 @@ export async function quiz(kind, { jar, progress, uid, jobId }) {
         }
         await page.waitForTimeout(700);
       }
+      if (!(await body.count())) {
+        submitted = true;
+        log('已离开答题页，正在核对实际积分');
+        break;
+      }
       if (await next.isDisabled().catch(() => true)) {
         log('确定按钮点不亮，跳过这题');
         break;
@@ -375,6 +388,10 @@ export async function quiz(kind, { jar, progress, uid, jobId }) {
       let changed = false;
       let finished = false;
       for (let k = 0; k < 24 && !changed; k++) {
+        if (!(await body.count())) {
+          finished = true;
+          break;
+        }
         const label = (await next.innerText().catch(() => '')).replace(/\s+/g, '');
         // 答错后先显示解析，需要再点一次「下一题」才会换题。
         if (label === '下一题') {
