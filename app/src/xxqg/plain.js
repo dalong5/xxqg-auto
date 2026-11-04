@@ -243,6 +243,15 @@ export async function submit() {
  * 返回 { ok, answered, submitted, why }
  */
 export async function runDaily(uid, jar, { maxQuestions = 24 } = {}) {
+  try {
+    return await runDailyInner(uid, jar, { maxQuestions });
+  } finally {
+    // 别把普通 Chrome 留在桌面上，下一轮任务还要重新 seed
+    await closeAll();
+  }
+}
+
+async function runDailyInner(uid, jar, { maxQuestions = 24 } = {}) {
   await seedProfile(uid, jar);
   await open(uid, 'https://pc.xuexi.cn/points/exam-practice.html');
   const log = (m) => console.log('[plain-daily]', m);

@@ -114,3 +114,14 @@ Windows + DSH 沙箱下 Chromium 必须 `danger-full-access`。账号 cookie 在
 同一路径在 Firefox（无 CDP）里拖滑块仍然失败，所以判据是「输入来自 OS 输入栈」，不是协议。
 
 踩过并已修的坑：`javascript:` 返回值是字符串会替换整页（必须 `void()` 包裹）；PowerShell 5.1 非 DPI 感知导致坐标被虚拟化；ps1 里非 ASCII 注释会让 PowerShell 解析失败（已改 ASCII 注释 + BOM）；`--load-extension` 在 Chrome 156 失效。
+## 2026-11-04 23:00 现状：代码就绪，卡在登录态
+
+- 11-04 18:47 定时任务把账号跑挂了：`cookie 已失效，请重新扫码`。之后 `open/api/user/info` 直接失败、`score` 返回空壳，所以**今天没有任何分数**，也没法验证滑块。
+- 11-03 23:45 那次实测证明：**无 CDP 普通 Chrome + 真实 OS 鼠标**能把每日答题交卷成功（2/5 → 5/5，总分 27 → 32）。这条路径已经产品化：
+  - `app/src/xxqg/plain.js`：`runDaily(uid, jar)` 一条龙（seed cookie → 开卷 → 看提示作答 → 完成 → 拖滑块 → 关浏览器）；
+  - `app/scripts/native.ps1`：DPI 感知的 SendInput（点击/拖拽/粘贴）；
+  - `app/src/xxqg/tasks.js`：每日答题默认先走这条；失败不再自动回退必挂的 CDP 通道（要回退设 `XXQG_PLAIN_FALLBACK=1`）。
+- 11-04 新增抗卡题：按钮没点亮就补选全部选项 / 补满空位；同一题卡 4 次才放弃（之前 14 轮耗尽在 5 道题上，报「没有完成按钮」）。
+- 自检脚本：`cd app && node research/check_daily.mjs`（先打登录态、跑一遍、再对分数，一行一个结论）。
+
+**下一步（只差这一件事）**：重新扫码拿到新 token，然后跑 `node research/check_daily.mjs`，确认「跑完 每日答题 5/5 ✅」。
