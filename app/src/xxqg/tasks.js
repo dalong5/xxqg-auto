@@ -189,9 +189,17 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
         note(`[plain] 每日答题作答 ${r.answered} 题，已交卷`);
         return `${cfg.name}完成（无 CDP 通道，滑块已过）`;
       }
-      note(`[plain] 无 CDP 通道没成功：${r.why || '未知'}，回退 Playwright 通道`);
+      note(`[plain] 无 CDP 通道没成功：${r.why || '未知'}`);
+      // CDP 通道在滑块上必挂，再跑一遍只是白耗 10 分钟；要试就显式开
+      if (!/^(1|true|yes)$/i.test(process.env.XXQG_PLAIN_FALLBACK || '')) {
+        return `${cfg.name}未完成（${r.why || '无 CDP 通道失败'}，滑块没过，未加分）`;
+      }
+      note('[plain] 按 XXQG_PLAIN_FALLBACK=1 回退 Playwright 通道');
     } catch (e) {
-      note(`[plain] 无 CDP 通道异常：${e.message}，回退 Playwright 通道`);
+      note(`[plain] 无 CDP 通道异常：${e.message}`);
+      if (!/^(1|true|yes)$/i.test(process.env.XXQG_PLAIN_FALLBACK || '')) {
+        return `${cfg.name}未完成（无 CDP 通道异常：${e.message}，未加分）`;
+      }
     }
   }
 

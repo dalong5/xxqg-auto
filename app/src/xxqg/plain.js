@@ -106,7 +106,7 @@ export async function open(uid, url) {
 
 // 控件矩形，换算成屏幕物理像素（可直接交给 SendInput）
 export const RECTS_JS =
-  "(function(){var d=devicePixelRatio;var f=document.querySelector('.action-row button:last-child');if(f)f.scrollIntoView({block:'center'});var oy=screenY*2+outerHeight*2-innerHeight*d;var ox=screenX*2+(outerWidth*2-innerWidth*d)/2;var o=function(e){var r=e.getBoundingClientRect();return [Math.round(ox+(r.x+r.width/2)*d),Math.round(oy+(r.y+r.height/2)*d)]};var tip=document.querySelector('.q-footer-answer-tip-wrap .tips')||document.querySelector('.q-footer-answer-tip-wrap')||document.querySelector('span.tips');document.title=JSON.stringify({opts:[].map.call(document.querySelectorAll('.q-answer'),function(e){return {t:e.innerText.trim(),c:o(e)}}),inputs:[].map.call(document.querySelectorAll('input.blank'),o),blanks:[].map.call(document.querySelectorAll('.click-box'),o),tiles:[].map.call(document.querySelectorAll('.fill-answer'),function(e){return {t:e.innerText.trim(),c:o(e)}}),btns:[].map.call(document.querySelectorAll('.action-row button'),function(e){return {t:e.innerText.trim(),c:o(e)}}),tip:tip?o(tip):null,slider:(function(){var s=document.querySelector('#aliyunCaptcha-sliding-slider');return s?o(s):null})(),track:(function(){var b=document.querySelector('#aliyunCaptcha-sliding-body');if(!b)return null;var r=b.getBoundingClientRect();return [Math.round(ox+(r.x+r.width)*d),Math.round(oy+(r.y+r.height/2)*d)]})(),q:(document.querySelector('.q-body')||{}).innerText})})()";
+  "(function(){var d=devicePixelRatio;var f=document.querySelector('.action-row button:last-child');if(f)f.scrollIntoView({block:'center'});var oy=screenY*2+outerHeight*2-innerHeight*d;var ox=screenX*2+(outerWidth*2-innerWidth*d)/2;var o=function(e){var r=e.getBoundingClientRect();return [Math.round(ox+(r.x+r.width/2)*d),Math.round(oy+(r.y+r.height/2)*d)]};var tip=document.querySelector('.q-footer-answer-tip-wrap .tips')||document.querySelector('.q-footer-answer-tip-wrap')||document.querySelector('span.tips');document.title=JSON.stringify({opts:[].map.call(document.querySelectorAll('.q-answer'),function(e){return {t:e.innerText.trim(),c:o(e)}}),inputs:[].map.call(document.querySelectorAll('input.blank'),o),blanks:[].map.call(document.querySelectorAll('.click-box'),o),tiles:[].map.call(document.querySelectorAll('.fill-answer'),function(e){return {t:e.innerText.trim(),c:o(e)}}),btns:[].map.call(document.querySelectorAll('.action-row button'),function(e){return {t:e.innerText.trim(),d:e.disabled,c:o(e)}}),tip:tip?o(tip):null,slider:(function(){var s=document.querySelector('#aliyunCaptcha-sliding-slider');return s?o(s):null})(),track:(function(){var b=document.querySelector('#aliyunCaptcha-sliding-body');if(!b)return null;var r=b.getBoundingClientRect();return [Math.round(ox+(r.x+r.width)*d),Math.round(oy+(r.y+r.height/2)*d)]})(),q:(document.querySelector('.q-body')||{}).innerText})})()";
 
 export async function rects() {
   const raw = await probe(RECTS_JS);
@@ -196,6 +196,27 @@ export async function advance() {
     await sleep(200);
     decided = 'input';
   }
+  // 按钮没点亮就把没用上的选项/空位都补上，不然永远推不动
+  for (let t = 0; t < 4; t++) {
+    const rr = await rects();
+    const btn = (rr.btns || []).find((b) => /确|下一题|完/.test(b.t));
+    if (!btn || !btn.d) break;
+    if (rr.opts?.length) {
+      for (const o of rr.opts) {
+        await clickAt(o.c[0], o.c[1]);
+        await sleep(220);
+      }
+    } else if (rr.blanks?.length && rr.tiles?.length) {
+      for (const b of rr.blanks) {
+        await clickAt(b[0], b[1]);
+        await sleep(200);
+        const tile = rr.tiles[Math.floor(Math.random() * rr.tiles.length)];
+        await clickAt(tile.c[0], tile.c[1]);
+        await sleep(220);
+      }
+    } else break;
+    await sleep(400);
+  }
   const fin = (r.btns || []).find((b) => /确|下一题|完/.test(b.t));
   if (!fin) return { ...r, decided, hint };
   await clickAt(fin.c[0], fin.c[1]);
@@ -221,11 +242,13 @@ export async function submit() {
  * 每日答题全流程（无 CDP 版）：预置 cookie → 开卷 → 逐题看提示作答 → 完成 → 拖滑块。
  * 返回 { ok, answered, submitted, why }
  */
-export async function runDaily(uid, jar, { maxQuestions = 14 } = {}) {
+export async function runDaily(uid, jar, { maxQuestions = 24 } = {}) {
   await seedProfile(uid, jar);
   await open(uid, 'https://pc.xuexi.cn/points/exam-practice.html');
   const log = (m) => console.log('[plain-daily]', m);
   let answered = 0;
+  let lastQ = '';
+  let stalls = 0;
   for (let n = 1; n <= maxQuestions; n++) {
     const r = await rects();
     if (r.raw) {
@@ -243,6 +266,16 @@ export async function runDaily(uid, jar, { maxQuestions = 14 } = {}) {
         continue;
       }
       return { ok: false, why: '没有可作答的题', btns: (r.btns || []).map((b) => b.t) };
+    }
+    const q = (r.q || '').replace(/\s+/g, '').slice(0, 24);
+    if (q && q === lastQ) stalls += 1;
+    else {
+      stalls = 0;
+      lastQ = q;
+    }
+    if (stalls >= 4) {
+      log(`同一题卡了 4 次，放弃本轮：${q.slice(0, 16)}`);
+      return { ok: false, why: '题目推不动', answered, q };
     }
     const out = await advance();
     answered += 1;
