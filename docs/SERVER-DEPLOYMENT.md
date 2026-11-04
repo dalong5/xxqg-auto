@@ -16,9 +16,24 @@ curl -fsS http://127.0.0.1:8099/healthz
 
 需要支持 `!override` 的 Compose 2.24.4 或更新版本。服务器覆盖配置只把 8099 发布到回环地址，固定容器监听地址与端口。不要将 Windows 的 CHROME_PATH 配置带到容器。
 
-Nginx 反向代理到 127.0.0.1:8099，启用 HTTPS 与 Basic Auth。扫码登录不等于网站访问控制。代理必须关闭 buffering/cache，读取超时设置 3600s，并给 xxqg_v cookie 添加 secure、httponly、samesite=lax。Instabox 可由端口网关终止 HTTPS，发布 Nginx 端口，不能直接发布 API 端口。凭据文件必须在仓库之外。
+Nginx 反向代理到 127.0.0.1:8099。2026-11-04 按用户要求取消网站 Basic Auth，直接打开网站即可；学习强国账号仍需 APP 扫码授权，账号列表与任务接口仍校验访客归属。匿名访问者可以生成二维码和启动浏览器自检。
 
-## 已验证的服务器结果（2026-11-03）
+当前 Nginx 配置保存于 `app/deploy/nginx.conf`，监听 8102，由 Instabox 端口网关提供 HTTPS。该配置用于网关后方的 HTTP 上游；独立公网服务器需要另行配置 TLS 证书和 HTTPS 监听。不要直接公开 API 的 8099 端口。
+
+代理关闭 buffering/cache，读取超时为 3600s，并给 xxqg_v cookie 添加 secure、httponly、samesite=lax。修改配置后先执行 nginx -t，再热重载；不需要重启 API/worker。
+
+## 最新验证（2026-11-04）
+
+- 多账号本地回归 19 项通过；Linux 容器 18 项通过、1 项 Windows 专用测试跳过、0 失败。
+- 容器端到端通过：官方二维码、登录页、人工验证转发、访客隔离、历史日志与任务恢复。
+- 公网显示多账号页面，/api/me 返回 maxAccounts=10，实际 worker 日志确认任务并发 2。
+- 升级后保留原账号及密钥；中断任务由新 UUID 执行器回收，attempts 增为 2，恢复 running。
+- 公网浏览器自检及 SSE 完成通知通过。
+- 移除网站访问密码后，无认证请求首页、/api/me、/healthz 均为 200，无 WWW-Authenticate 头，worker 在线。
+
+多个真实账号同时计分、长期跨天运行尚未验证。服务器重建时需要重新发布 Nginx 端口；机器停机期间网站不可用。
+
+## 首次部署记录（2026-11-03，访问密码状态已由上述更新替代）
 
 - Debian x86_64、4 核 8GB、Docker Compose 5.6.0：镜像构建与启动成功。
 - 公网 HTTPS：匿名 401，认证后页面/API 200，访客 cookie 带 Secure。
