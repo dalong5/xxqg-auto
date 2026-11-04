@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>强国助手 · 单账号测试版</title>
+<title>强国助手 · 多账号</title>
 <style>
   :root { color-scheme: dark; --bg:#0f1115; --card:#171a21; --line:#242a35; --txt:#e6e9ef; --dim:#8d97a8; --red:#e0353b; --grn:#2ecc71; --amb:#ffd479; }
   * { box-sizing: border-box; }
@@ -22,6 +22,7 @@
   button:hover:not(:disabled) { border-color:#3a4456; }
   button.primary { background:var(--red); border-color:var(--red); color:#fff; }
   button:disabled { opacity:.45; cursor:not-allowed; }
+  select { font:inherit; max-width:100%; padding:9px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--txt); }
   #qrbox { display:grid; place-items:center; min-height:232px; border:1px dashed var(--line); border-radius:10px; margin:12px 0; }
   #qrbox img { width:220px; height:220px; background:#fff; border-radius:6px; padding:6px; }
   .hint { color:var(--dim); font-size:12px; }
@@ -47,7 +48,7 @@
 <header>
   <div class="logo">强</div>
   <div>
-    <h1>强国助手 <span class="sub">单账号测试版</span></h1>
+    <h1>强国助手 <span class="sub">多账号</span></h1>
     <div class="sub">扫码登录 · 签到 · 阅读 / 视听 / 答题 · 积分回查</div>
   </div>
   <div class="dot" id="conn" title="worker 状态"></div>
@@ -62,6 +63,9 @@
   </section>
   <section class="card">
     <h2>账号</h2>
+    <label for="accountSelect">当前账号</label>
+    <select id="accountSelect" aria-label="当前账号"></select>
+    <div id="accountHint" class="hint"></div>
     <div id="acct"><div class="hint">还没有绑定账号</div></div>
     <div id="qrbox"><span class="hint">点下面按钮生成二维码</span></div>
     <div id="loginmsg" class="hint">用「学习强国」APP 扫码，扫完在手机上点确认，2 分钟内有效</div>
@@ -102,6 +106,8 @@ const $ = (id) => document.getElementById(id);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const NAMES = { 1:'阅读文章', 2:'视听学习', 9:'每日登录', 10:'订阅', 11:'发表观点', 12:'趣味答题', 14:'本地频道', 15:'强国运动（每周）', 1002:'文章时长', 1003:'视听时长', 6:'每日答题', 5:'每周答题', 4:'专项答题' };
 let user = null;
+let accounts = [];
+let maxAccounts = null;
 let stream = null;
 let followedJob = null;
 let loginStream = null;
@@ -163,6 +169,19 @@ function renderScore(score) {
 }
 
 function renderAccount() {
+  const select = $('accountSelect');
+  select.replaceChildren();
+  for (const account of accounts) {
+    const option = document.createElement('option');
+    option.value = account.uid;
+    option.textContent = `${account.nick || account.uid}（${account.uid}）${account.active_job ? ' · 任务中' : ''}`;
+    select.appendChild(option);
+  }
+  select.disabled = !accounts.length;
+  select.value = user?.uid || '';
+  $('accountHint').textContent = `已绑定 ${accounts.length}${maxAccounts === null ? '' : ` / ${maxAccounts}`} 个账号。可继续扫码添加，切换查看各账号的积分、日志和安全验证。`;
+  $('rows').innerHTML = '<div class="hint">尚无今日积分，请点击「查当前积分」</div>';
+  $('funHint').hidden = true;
   if (!user) {
     $('funHint').hidden = true;
     $('acct').innerHTML = '<div class="hint">还没有绑定账号</div>';
@@ -180,24 +199,49 @@ function renderAccount() {
   renderScore(s.tasks ? s : null);
 }
 
-async function load() {
+async function load(preferredUid) {
   const users = await api('/api/users');
-  user = users[0] || null;
+  accounts = users;
+  const uid = preferredUid == null ? user?.uid || sessionStorage.getItem('selectedUser') : String(preferredUid);
+  const selected = users.find(account => account.uid === uid) || users[0] || null;
+  if (selected?.uid !== user?.uid) { stopFollowing(); $('log').replaceChildren(); }
+  user = selected;
+  if (user) sessionStorage.setItem('selectedUser', user.uid);
+  else sessionStorage.removeItem('selectedUser');
   renderAccount();
   if (user?.active_job && user.active_job !== followedJob) followJob(user.active_job);
 }
 
+$('accountSelect').onchange = () => {
+  stopFollowing();
+  $('log').replaceChildren();
+  user = accounts.find(account => account.uid === $('accountSelect').value) || null;
+  if (user) sessionStorage.setItem('selectedUser', user.uid);
+  renderAccount();
+  if (user?.active_job) followJob(user.active_job);
+};
+
 // ---------- SSE ----------
-function followJob(jobId) {
+function stopFollowing() {
+  stream?.close(); stream = null; followedJob = null;
+  sessionStorage.removeItem('activeJob');
+  sessionStorage.removeItem('activeJobUser');
+  $('verification').hidden = true; verificationJob = null; verificationSize = null; pointerDown = false;
+}
+
+function followJob(jobId, uid = user?.uid || '') {
+  stopFollowing();
   sessionStorage.setItem('activeJob', jobId);
+  sessionStorage.setItem('activeJobUser', uid);
   followedJob = jobId;
   stream?.close();
   const es = new EventSource(`/api/jobs/${jobId}/events`);
   stream = es;
   es.onmessage = (e) => {
+    if (stream !== es || (uid && user?.uid !== uid)) return;
     const { type, payload } = JSON.parse(e.data);
     if (['log', 'ok', 'bad', 'step'].includes(type)) log(payload.text, payload.text.startsWith('✔') ? 'ok' : payload.text.startsWith('✘') ? 'bad' : payload.text.startsWith('▶') ? 'step' : 'dim');
-    if (type === 'score' && user) { user.last_score = payload; renderAccount(); }
+    if (type === 'score' && user?.uid === uid) { user.last_score = payload; renderAccount(); }
     if (type === 'verification') {
       verificationJob = jobId; verificationSize = payload;
       $('verification').hidden = false;
@@ -207,21 +251,24 @@ function followJob(jobId) {
     if (type === 'error') log(payload.error, 'bad');
   };
   es.addEventListener('end', e => {
+    if (stream !== es || (uid && user?.uid !== uid)) return;
     const result = JSON.parse(e.data);
     log(result.status === 'done' ? '任务已完成' : `任务未完成：${result.error || result.status}`, result.status === 'done' ? 'ok' : 'bad');
-    es.close(); followedJob = null; sessionStorage.removeItem('activeJob');
-    $('verification').hidden = true; verificationJob = null;
+    stopFollowing();
     load().catch(e => log(e.message, 'bad'));
   });
-  es.onerror = () => log('日志连接中断，正在重新连接…', 'dim');
+  es.onerror = () => { if (stream === es) log('日志连接中断，正在重新连接…', 'dim'); };
 }
 
 async function run(tasks) {
   if (!user) return log('请先扫码登录', 'bad');
+  const uid = user.uid;
   try {
-    const d = await api(`/api/users/${user.uid}/run`, {
+    const d = await api(`/api/users/${encodeURIComponent(uid)}/run`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tasks }),
     });
+    if (user?.uid !== uid) return;
+    user.active_job = d.jobId;
     log(`已入队：${tasks.join(' / ')}（队列 ${d.queued}）`, 'step');
     followJob(d.jobId);
   } catch (e) { log(e.message, 'bad'); }
@@ -229,8 +276,11 @@ async function run(tasks) {
 
 async function refresh() {
   if (!user) return log('请先扫码登录', 'bad');
+  const uid = user.uid;
   try {
-    const d = await api(`/api/users/${user.uid}/sync`, { method: 'POST' });
+    const d = await api(`/api/users/${encodeURIComponent(uid)}/sync`, { method: 'POST' });
+    if (user?.uid !== uid) return;
+    user.active_job = d.jobId;
     followJob(d.jobId);
   } catch (e) { log(e.message, 'bad'); }
 }
@@ -255,8 +305,7 @@ $('btnLogin').onclick = async () => {
       es.close();
       $('qrbox').innerHTML = '<span class="hint">登录成功，可以开始任务</span>';
       log(`登录成功：${payload.nick}`, 'ok');
-      await load();
-      if (payload.score) { user.last_score = payload.score; renderAccount(); }
+      await load(payload.uid);
     }
     if (type === 'failed') { es.close(); $('qrbox').innerHTML = `<span class="hint">${escapeHtml(payload.error)}</span>`; log(payload.error, 'bad'); }
   };
@@ -267,9 +316,14 @@ $('btnLogin').onclick = async () => {
 };
 
 $('btnDel').onclick = async () => {
+  if (!user) return;
   if (!confirm('解绑后需要重新扫码')) return;
-  await api(`/api/users/${user.uid}`, { method: 'DELETE' });
-  user = null; renderAccount(); log('已解绑');
+  const uid = user.uid;
+  try {
+    await api(`/api/users/${encodeURIComponent(uid)}`, { method: 'DELETE' });
+    if (user?.uid === uid) { stopFollowing(); user = null; $('log').replaceChildren(); }
+    await load(); log('已解绑');
+  } catch (e) { log(e.message, 'bad'); }
 };
 
 $('btnAll').onclick = () => run(['login', 'article', 'video', 'daily', 'weekly', 'special']);
@@ -282,7 +336,7 @@ $('btnSelf').onclick = async () => {
   if (user?.active_job) { followJob(user.active_job); log('已接回当前答题任务，请先完成安全验证', 'step'); return; }
   const d = await api('/api/selftest', { method: 'POST' });
   log('开始浏览器自检（不需要账号）', 'step');
-  followJob(d.jobId);
+  followJob(d.jobId, '');
 };
 
 // worker 心跳
@@ -296,7 +350,10 @@ async function beat() {
 beat();
 setInterval(beat, 5000);
 setInterval(() => load().catch(() => {}), 5000);
-load().then(() => { const active = sessionStorage.getItem('activeJob'); if (active) followJob(active); }).catch((e) => log(e.message, 'bad'));
+const savedJob = sessionStorage.getItem('activeJob');
+const savedJobUser = sessionStorage.getItem('activeJobUser');
+api('/api/me').then(me => { maxAccounts = me.maxAccounts; renderAccount(); }).catch(e => log(e.message, 'bad'));
+load().then(() => { if (!followedJob && savedJob && (!savedJobUser || savedJobUser === user?.uid)) followJob(savedJob, savedJobUser || ''); }).catch((e) => log(e.message, 'bad'));
 </script>
 </body>
 </html>

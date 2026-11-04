@@ -5,6 +5,9 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8099
+      MAX_ACCOUNTS: 10
   worker:
     environment:
       INSTABOX_HEADLESS: "1"
+      MAX_ACCOUNTS: 10
+      WORKER_CONCURRENCY: 2

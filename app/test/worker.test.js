@@ -11,10 +11,11 @@ let result;
 let scoreCalls = 0;
 let finalScoreFailure = false;
 const events = [];
+const workerIds = new Set();
 const { seal } = await import('../src/crypto.js');
 mock.module('../src/db.js', { exports: {
   getUser: () => ({ sealed_cookie: seal({ token: 'test' }) }),
-  setUserScore() {}, addEvent: (...e) => events.push(e), beat() {}, requeueDeadJobs() {}, trimEvents() {}, deleteStaleLogins() {},
+  setUserScore() {}, addEvent: (...e) => events.push(e), beat: id => workerIds.add(id), requeueDeadJobs() {}, trimEvents() {}, deleteStaleLogins() {},
   claimJob: () => { const j = nextJob; nextJob = null; return j; },
   finishJob: () => { result = 'done'; }, failJob: () => { result = 'failed'; },
 } });
@@ -33,6 +34,7 @@ test('worker wires per-item refresh and reports task failure', async () => {
   nextJob = { id: 'test', uid: '1', kind: 'run', tasks: '["article"]', attempts: 1, created_at: Date.now() };
   await worker.startWorker();
   try {
+    assert.match([...workerIds][0], /^w-\d+-[a-f0-9-]{36}$/, 'worker identity must not be reused when a container restarts as PID 1');
     const deadline = Date.now() + 2000;
     while (!result && Date.now() < deadline) await new Promise(r => setTimeout(r, 20));
     assert.equal(refreshed, true);

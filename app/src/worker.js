@@ -1,5 +1,6 @@
 import { config } from './config.js';
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import * as db from './db.js';
 import { Jar, score } from './xxqg/client.js';
 import { learn, quiz } from './xxqg/tasks.js';
@@ -7,7 +8,7 @@ import { newSession, closeBrowser, getBrowser } from './xxqg/browser.js';
 import { claimLogin, driveLogin } from './loginflow.js';
 import { open as unseal, seal } from './crypto.js';
 
-const WORKER_ID = `${process.env.WORKER_NAME || 'w'}-${process.pid}`;
+const WORKER_ID = `${process.env.WORKER_NAME || 'w'}-${process.pid}-${randomUUID()}`;
 const TASK_KINDS = ['run', 'sync', 'selftest'];
 
 const log = (job, text, type = 'log') => db.addEvent(job.id, job.uid, type, { text });
