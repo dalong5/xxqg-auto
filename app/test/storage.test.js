@@ -60,4 +60,16 @@ test('a concurrent startup waits for an existing database writer', async () => {
   assert.equal(code, 0, errors);
 });
 
+test('unbind rejects queued and running tasks without losing account credentials', () => {
+  db.upsertUser({ uid: 'unbind', visitorId: 'guard', nick: 'guard', jar: { token: 'keep' }, expiresAt: 0 });
+  const id = db.enqueue({ kind: 'unbind-fixture', uid: 'unbind', visitorId: 'guard' });
+  assert.equal(db.deleteUser('unbind', 'guard').changes, 0);
+  db.claimJob('unbind-fixture', 'fixture');
+  assert.equal(db.deleteUser('unbind', 'guard').changes, 0);
+  assert.ok(db.getUser('unbind'));
+  db.finishJob(id);
+  assert.equal(db.deleteUser('unbind', 'other').changes, 0);
+  assert.equal(db.deleteUser('unbind', 'guard').changes, 1);
+});
+
 test.after(() => { db.db.close(); rmSync(process.env.DATA_DIR, { recursive: true, force: true }); });

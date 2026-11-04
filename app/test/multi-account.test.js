@@ -73,9 +73,32 @@ test('multiple accounts keep selection, scores, jobs and verification isolated',
     assert.equal(db.getJob(await page.evaluate(() => followedJob)).uid, '202');
     const other = await browser.newContext();
     assert.deepEqual(await (await other.request.get(`${base}/api/users`)).json(), []);
-    assert.equal((await other.request.post(`${base}/api/users/b/run`, { data: { tasks: ['article'] } })).status(), 404);
+    assert.equal((await other.request.post(`${base}/api/users/202/run`, { data: { tasks: ['article'] } })).status(), 404);
     assert.equal((await other.request.get(`${base}/api/jobs/${b}/events`)).status(), 404);
     await other.close();
+    let releaseOld;
+    let oldStarted;
+    const held = new Promise(resolve => { releaseOld = resolve; });
+    const started = new Promise(resolve => { oldStarted = resolve; });
+    const snapshot = await (await context.request.get(`${base}/api/users`)).json();
+    let requests = 0;
+    await page.route('**/api/users', async route => {
+      if (++requests === 1) {
+        oldStarted();
+        await held;
+        await route.fulfill({ json: snapshot.filter(account => account.uid === '101') });
+      } else await route.fulfill({ json: snapshot });
+    });
+    await page.evaluate(() => { window.delayedLoad = load(); });
+    await started;
+    await page.evaluate(() => load());
+    releaseOld();
+    await page.evaluate(() => window.delayedLoad);
+    assert.equal(await page.locator('#accountSelect').inputValue(), '202', 'late responses must not replace newer account state');
+    await page.unroute('**/api/users');
+    const rejected = await context.request.delete(`${base}/api/users/202`);
+    assert.equal(rejected.status(), 409, 'running or queued tasks must prevent unbinding');
+    assert.ok(db.getUser('202'));
     await page.route('**/api/login/start', route => route.fulfill({ json: { sid: 'login-fixture' } }));
     await page.route('**/api/login/login-fixture/events', route => route.fulfill({
       contentType: 'text/event-stream', body: `data: ${JSON.stringify({ type: 'done', payload: { uid: 202, nick: '账号乙' } })}\n\n`,

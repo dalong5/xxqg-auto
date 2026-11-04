@@ -108,6 +108,7 @@ const NAMES = { 1:'阅读文章', 2:'视听学习', 9:'每日登录', 10:'订阅
 let user = null;
 let accounts = [];
 let maxAccounts = null;
+let loadVersion = 0;
 let stream = null;
 let followedJob = null;
 let loginStream = null;
@@ -200,9 +201,12 @@ function renderAccount() {
 }
 
 async function load(preferredUid) {
+  const version = ++loadVersion;
+  if (preferredUid != null) sessionStorage.setItem('selectedUser', String(preferredUid));
   const users = await api('/api/users');
+  if (version !== loadVersion) return;
   accounts = users;
-  const uid = preferredUid == null ? user?.uid || sessionStorage.getItem('selectedUser') : String(preferredUid);
+  const uid = sessionStorage.getItem('selectedUser') || user?.uid;
   const selected = users.find(account => account.uid === uid) || users[0] || null;
   if (selected?.uid !== user?.uid) { stopFollowing(); $('log').replaceChildren(); }
   user = selected;

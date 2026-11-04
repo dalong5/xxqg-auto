@@ -68,7 +68,8 @@ app.get('/api/users', (req, res) => {
 });
 
 app.delete('/api/users/:uid', (req, res) => {
-  db.deleteUser(req.params.uid, req.visitor);
+  if (!ownUser(req, res)) return;
+  if (!db.deleteUser(req.params.uid, req.visitor).changes) return res.status(409).json({ error: '账号有排队或运行中的任务，请等待任务结束后再解绑' });
   res.json({ ok: true });
 });
 

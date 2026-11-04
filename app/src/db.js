@@ -177,7 +177,7 @@ export const setUserScore = (uid, score) => {
   return true;
 };
 export const deleteUser = (uid, visitorId) =>
-  db.prepare('DELETE FROM users WHERE uid = ? AND visitor_id = ?').run(uid, visitorId);
+  db.prepare("DELETE FROM users WHERE uid = ? AND visitor_id = ? AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running'))").run(uid, visitorId);
 
 // ---------- 任务队列（跨进程原子领取） ----------
 export function enqueue({ kind, uid = null, visitorId, tasks = null }) {
