@@ -132,7 +132,7 @@ async function readTips(page) {
   let tipBtn = page.locator('.tips').first();
   if (!(await tipBtn.count())) tipBtn = page.locator('text=查看提示').first();
   if (!(await tipBtn.count())) return [];
-  await safeClick(page, tipBtn).catch(() => {});
+  await safeClick(page, tipBtn);
   await page.waitForTimeout(600 + Math.floor(Math.random() * 500));
   const html = await page.locator('.ant-popover .line-feed').first().innerHTML().catch(() => '');
   const tips = [...html.matchAll(/<font[^>]*>([\s\S]*?)<\/font>/g)]
@@ -161,7 +161,7 @@ async function fillEmptyBlanks(page) {
     const chips = page.locator('.fill-answer');
     const n = await chips.count();
     if (!n) return false;
-    await safeClick(page, chips.nth(Math.floor(Math.random() * n))).catch(() => {});
+    await safeClick(page, chips.nth(Math.floor(Math.random() * n)));
     await page.waitForTimeout(250);
   }
   return false;
@@ -240,7 +240,7 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
         let rest = tips.join('').trim();
         const used = new Set();
         for (let i = 0; i < total; i++) {
-          await safeClick(page, blanks.nth(i)).catch(() => {});
+          await safeClick(page, blanks.nth(i));
           await page.waitForTimeout(180 + Math.floor(Math.random() * 220));
           if (!rest) continue;
           let pick = -1;
@@ -263,7 +263,7 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
             continue;
           }
           used.add(pick);
-          await safeClick(page, chips.nth(pick)).catch(() => {});
+          await safeClick(page, chips.nth(pick));
           rest = rest.slice(chipTexts[pick].length);
           await page.waitForTimeout(280 + Math.floor(Math.random() * 320));
         }
@@ -286,7 +286,7 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
             const key = tip.replace(/\s+/g, '');
             if (!picked.has(i) && key && (key.includes(norm) || norm.includes(key))) {
               picked.add(i);
-              await safeClick(page, options.nth(i)).catch(() => {});
+              await safeClick(page, options.nth(i));
               await page.waitForTimeout(150 + Math.floor(Math.random() * 250));
             }
           }
@@ -296,7 +296,7 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
           const letters = 'ABCDEFGHIJKLMN'.split('');
           for (const t of (tips.join(' ').match(/\b[A-N]\b/g) || [])) {
             const i = letters.indexOf(t.trim());
-            if (i >= 0 && i < count) await safeClick(page, options.nth(i)).catch(() => {});
+            if (i >= 0 && i < count) await safeClick(page, options.nth(i));
           }
         }
       }
@@ -306,18 +306,18 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
       // 最后一题的按钮是「完 成」（有的卷子是「交 卷」），点了就结束
       const submit = page.locator('.action-row button:has-text("交"), .action-row button:has-text("完")').first();
       if (await submit.count()) {
-        await safeClick(page, submit).catch(() => {});
+        await safeClick(page, submit);
         await page.waitForTimeout(1500);
         const confirm = page.locator('.ant-modal button:has-text("确")').first();
-        if (await confirm.count()) await safeClick(page, confirm).catch(() => {});
+        if (await confirm.count()) await safeClick(page, confirm);
         await page.waitForTimeout(1200);
         // 出现解析说明这题已提交；再确认一次有没有独立交卷按钮
         const final = page.locator('button:has-text("交卷"), button:has-text("交 卷"), button:has-text("提交")').first();
         if (await final.count()) {
-          await safeClick(page, final).catch(() => {});
+          await safeClick(page, final);
           await page.waitForTimeout(1000);
           const c2 = page.locator('.ant-modal button:has-text("确")').first();
-          if (await c2.count()) await safeClick(page, c2).catch(() => {});
+          if (await c2.count()) await safeClick(page, c2);
         }
         log('已点击提交，正在核对实际积分');
         submitted = true;
@@ -351,14 +351,14 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
             const filled = (await blanks.nth(b).innerText().catch(() => '')).trim();
             if (filled) continue;
             for (let k = 0; k < cn && !lit; k++) {
-              await safeClick(page, blanks.nth(b)).catch(() => {});
-              await safeClick(page, chips.nth(k)).catch(() => {});
+              await safeClick(page, blanks.nth(b));
+              await safeClick(page, chips.nth(k));
               await page.waitForTimeout(320);
               if (!(await next.isDisabled().catch(() => true))) lit = true;
               else {
                 const now = (await blanks.nth(b).innerText().catch(() => '')).trim();
                 if (now) {
-                  await safeClick(page, blanks.nth(b)).catch(() => {});
+                  await safeClick(page, blanks.nth(b));
                   await page.waitForTimeout(160);
                 }
               }
@@ -366,7 +366,7 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
           }
         } else if (chosen === 0) {
           // 只在没选中时补点，避免把已选的又点掉
-          await safeClick(page, options.nth(t % count)).catch(() => {});
+          await safeClick(page, options.nth(t % count));
         }
         await page.waitForTimeout(700);
       }
@@ -381,13 +381,13 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
       }
 
       if (await next.isDisabled().catch(() => true)) await fillEmptyBlanks(page);
-      await safeClick(page, next).catch(() => {});
+      await safeClick(page, next);
       answered++;
       await page.waitForTimeout(400);
       // 弹确认框（最后一题常见）就直接确认
       const confirmBox = page.locator('.ant-modal button:has-text("确")').first();
       if (await confirmBox.count()) {
-        await safeClick(page, confirmBox).catch(() => {});
+        await safeClick(page, confirmBox);
         log('已点击提交，正在核对实际积分');
         submitted = true;
         break;
@@ -424,11 +424,11 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
         for (let t = 0; t < 3; t++) {
           await clearCaptcha(page);
           if (!(await finish.count())) break;
-          await safeClick(page, finish).catch(() => {});
+          await safeClick(page, finish);
           await page.waitForTimeout(1500);
           const confirm3 = page.locator('.ant-modal button:has-text("确")').first();
           if (await confirm3.count()) {
-            await safeClick(page, confirm3).catch(() => {});
+            await safeClick(page, confirm3);
             await page.waitForTimeout(1200);
           }
           const label = (await finish.innerText().catch(() => '')).replace(/\s+/g, '');
@@ -445,10 +445,10 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
         // 点选填空有空位没填满时，确定会点了不生效，先补满
         await fillEmptyBlanks(page);
         log('题干一直没变，补填空位后再点一次确定');
-        await safeClick(page, next).catch(() => {});
+        await safeClick(page, next);
         const confirm2 = page.locator('.ant-modal button:has-text("确")').first();
         if (await confirm2.count()) {
-          await safeClick(page, confirm2).catch(() => {});
+          await safeClick(page, confirm2);
           submitted = true;
           log('已点击提交，正在核对实际积分');
           break;
@@ -467,16 +467,16 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
       for (let attempt = 0; attempt < 3 && !submitted; attempt++) {
         const submit = page.locator('.action-row button:has-text("交")').first();
         if (await submit.count()) {
-          await safeClick(page, submit).catch(() => {});
+          await safeClick(page, submit);
         } else {
           const any = page.locator('.action-row button:not([disabled])').first();
           if (!(await any.count())) break;
-          await safeClick(page, any).catch(() => {});
+          await safeClick(page, any);
         }
         await page.waitForTimeout(1500);
         const confirm = page.locator('.ant-modal button:has-text("确")').first();
         if (await confirm.count()) {
-          await safeClick(page, confirm).catch(() => {});
+          await safeClick(page, confirm);
           log('兜底交卷');
           submitted = true;
           break;

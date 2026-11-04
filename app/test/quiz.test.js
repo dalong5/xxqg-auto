@@ -8,10 +8,18 @@ import path from 'node:path';
 process.env.DATA_DIR = mkdtempSync(path.join(tmpdir(), 'xxqg-quiz-'));
 let page;
 const questionDelays = [];
+let verificationFailure = false;
+let failedClicks = 0;
 mock.module('../src/xxqg/browser.js', { exports: {
   newSession: async () => ({ page, close: async () => {} }),
   dwell() {}, jitter() {}, sleep: async ms => { questionDelays.push(ms); }, clearCaptcha: async () => true,
-  safeClick: async (_page, locator) => locator.click(),
+  safeClick: async (_page, locator) => {
+    if (verificationFailure && /确\s*定|完\s*成/.test(await locator.innerText())) {
+      failedClicks++;
+      throw new Error('人工验证超时，请重新运行任务');
+    }
+    return locator.click();
+  },
 } });
 const { quiz } = await import('../src/xxqg/tasks.js');
 
@@ -73,4 +81,23 @@ test('a completed result page does not wait for the removed next button', async 
     const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('仍在等待已被移除的答题按钮')), 1500); });
     assert.match(await Promise.race([quiz('daily', { progress }), deadline]), /已确认计分 5\/5/);
   } finally { clearTimeout(timer); await browser.close(); }
+});
+
+test('verification failure stops answering immediately instead of trying further submissions', async () => {
+  const browser = await chromium.launch({ channel: process.env.CHROME_CHANNEL || 'chrome', executablePath: process.env.CHROME_PATH || undefined, headless: true });
+  const notes = [];
+  try {
+    page = await browser.newPage();
+    await page.setContent('<div class="my-points-card">每日答题<button>去答题</button></div><div class="q-header">填空题</div><div class="q-body">本题<input></div><div class="action-row"><button>确定</button></div>');
+    page.goto = async () => {};
+    page.waitForTimeout = async () => {};
+    verificationFailure = true;
+    failedClicks = 0;
+    const progress = Object.assign(() => ({ tasks: { 6: { done: 0, max: 5 } } }), {
+      note: text => notes.push(text), refresh: async () => ({ tasks: { 6: { done: 0, max: 5 } } }),
+    });
+    await assert.rejects(() => quiz('daily', { progress }), /人工验证超时/);
+    assert.equal(failedClicks, 1, 'a failed verification must never reach another answer or submit click');
+    assert.ok(!notes.some(note => /已点击提交|兜底交卷|再点一次/.test(note)));
+  } finally { verificationFailure = false; await browser.close(); }
 });
