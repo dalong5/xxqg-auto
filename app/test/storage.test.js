@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 process.env.DATA_DIR = mkdtempSync(path.join(tmpdir(), 'xxqg-storage-'));
+process.env.MAX_ACCOUNTS = '1';
 const db = await import('../src/db.js');
 const { open } = await import('../src/crypto.js');
 
