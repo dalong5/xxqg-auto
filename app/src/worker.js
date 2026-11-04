@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { taskName, logText, userError } from './messages.js';
 import * as db from './db.js';
 import { Jar, score } from './xxqg/client.js';
 import { learn, quiz } from './xxqg/tasks.js';
@@ -11,7 +12,7 @@ import { open as unseal, seal } from './crypto.js';
 const WORKER_ID = `${process.env.WORKER_NAME || 'w'}-${process.pid}-${randomUUID()}`;
 const TASK_KINDS = ['run', 'sync', 'selftest'];
 
-const log = (job, text, type = 'log') => db.addEvent(job.id, job.uid, type, { text });
+const log = (job, text, type = 'log') => db.addEvent(job.id, job.uid, type, { text: logText(text) });
 
 const tryUnseal = (blob) => {
   try {
@@ -82,10 +83,8 @@ const HANDLERS = {
         }
       }
       const frames = page.frames().map((f) => f.url());
-      db.addEvent(job.id, null, 'log', {
-        text: `HTTP ${res?.status()} · iframe ${frames.length} · sso ${Boolean(sso)} · qr ${qrPixels} · ${Date.now() - started}ms`,
-      });
-      if (!qrPixels) throw new Error('登录流程未完整渲染（二维码或授权 iframe 缺失）');
+      log(job, `HTTP ${res?.status()} · iframe ${frames.length} · sso ${Boolean(sso)} · qr ${qrPixels} · ${Date.now() - started}ms`);
+      if (!qrPixels) throw new Error('登录页面未完整加载，二维码或授权页面缺失');
     } finally {
       await ctx.close().catch(() => {});
     }
@@ -154,12 +153,12 @@ const HANDLERS = {
         throw new Error('超出时长预算，任务尚未完成');
       }
       if (!runners[name]) continue;
-      log(job, `▶ 开始 ${name}`, 'step');
+      log(job, `▶ 开始 ${taskName(name)}`, 'step');
       try {
         const msg = await runners[name]();
-        log(job, `✔ ${name}：${msg}`, 'ok');
+        log(job, `✔ ${taskName(name)}：${msg}`, 'ok');
       } catch (e) {
-        log(job, `✘ ${name} 失败：${e.message || e}`, 'bad');
+        log(job, `✘ ${taskName(name)} 失败：${userError(e.message || e)}`, 'bad');
         throw e;
       }
       const latest = await score(jar).catch(() => null);
@@ -186,9 +185,11 @@ async function runTaskJob(job) {
     await HANDLERS[job.kind](job);
     db.finishJob(job.id);
   } catch (e) {
-    const retry = job.attempts < 2 && /ECONN|timeout|ETIMEDOUT/i.test(String(e.message));
+    const message = String(e.message || e);
+    const safetyStop = /\b(?:401|403|429)\b|captcha|slider|risk|security.?check|too many requests|rate.?limit|unauthorized|forbidden|验证|风控|账号异常|访问异常|登录.*失效|请求被拒绝/i.test(message);
+    const retry = !safetyStop && job.attempts < 2 && /ECONN|timeout|ETIMEDOUT/i.test(message);
     db.failJob(job.id, e.message || e, retry);
-    db.addEvent(job.id, job.uid, 'error', { error: String(e.message || e) });
+    db.addEvent(job.id, job.uid, 'error', { error: userError(e.message || e) });
   }
 }
 

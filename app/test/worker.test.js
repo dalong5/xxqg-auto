@@ -10,6 +10,8 @@ let nextJob = null;
 let result;
 let scoreCalls = 0;
 let finalScoreFailure = false;
+let riskFailure = '';
+let retried;
 const events = [];
 const workerIds = new Set();
 const { seal } = await import('../src/crypto.js');
@@ -17,7 +19,7 @@ mock.module('../src/db.js', { exports: {
   getUser: () => ({ sealed_cookie: seal({ token: 'test' }) }),
   setUserScore() {}, addEvent: (...e) => events.push(e), beat: id => workerIds.add(id), requeueDeadJobs() {}, trimEvents() {}, deleteStaleLogins() {},
   claimJob: () => { const j = nextJob; nextJob = null; return j; },
-  finishJob: () => { result = 'done'; }, failJob: () => { result = 'failed'; },
+  finishJob: () => { result = 'done'; }, failJob: (_id, _error, retry) => { result = 'failed'; retried = retry; },
 } });
 mock.module('../src/loginflow.js', { exports: { claimLogin: () => null, driveLogin() {} } });
 mock.module('../src/xxqg/client.js', { exports: { Jar: class {}, score: async () => {
@@ -26,7 +28,7 @@ mock.module('../src/xxqg/client.js', { exports: { Jar: class {}, score: async ()
 } } });
 mock.module('../src/xxqg/browser.js', { exports: { newSession() {}, closeBrowser() {}, getBrowser: async () => ({}) } });
 mock.module('../src/xxqg/tasks.js', { exports: {
-  learn: async (_kind, opts) => { assert.equal(typeof opts.progress.refresh, 'function'); await opts.progress.refresh(); refreshed = true; throw new Error('积分未达标'); },
+  learn: async (_kind, opts) => { assert.equal(typeof opts.progress.refresh, 'function'); await opts.progress.refresh(); refreshed = true; throw new Error(riskFailure || '积分未达标'); },
   quiz: async () => { throw new Error('需要人工验证'); },
 } });
 const worker = await import('../src/worker.js');
@@ -46,6 +48,18 @@ test('worker wires per-item refresh and reports task failure', async () => {
     const end = Date.now() + 2000;
     while (!result && Date.now() < end) await new Promise(r => setTimeout(r, 20));
     assert.equal(result, 'failed', 'final score failure must not mark the job done');
+    finalScoreFailure = false;
+    for (const message of ['平台请求失败 HTTP 429 timeout', 'HTTP 403 timeout', 'captcha timeout', 'risk control timeout']) {
+      result = null;
+      riskFailure = message;
+      nextJob = { id: 'risk-check', uid: '1', kind: 'run', tasks: '["article"]', attempts: 1, created_at: Date.now() };
+      const riskDeadline = Date.now() + 2000;
+      while (!result && Date.now() < riskDeadline) await new Promise(r => setTimeout(r, 20));
+      assert.equal(result, 'failed');
+      assert.equal(retried, false, 'platform risk responses must not be retried as network timeouts');
+    }
+    assert.ok(events.some(event => event[3]?.text === '▶ 开始 阅读文章'));
+    assert.ok(events.some(event => event[3]?.error?.includes('频繁')));
   } finally { worker.stopWorker(); }
 });
 test.after(() => rmSync(process.env.DATA_DIR, { recursive: true, force: true }));

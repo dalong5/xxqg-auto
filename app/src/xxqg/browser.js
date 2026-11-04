@@ -158,17 +158,14 @@ export async function clearCaptcha(page) {
   }
 }
 
-/** 点击；被验证码挡住就先过验证码再点；再不济强制派发 */
+/** 正常点击；只有人工验证完成后才重试，不强制绕过页面遮挡。 */
 export async function safeClick(page, locator, opts = {}) {
   try {
     return await locator.click({ timeout: 6000, ...opts });
   } catch (e) {
-    if (await page.locator('#JS_aliyun-captcha-dialog.show').count()) await clearCaptcha(page);
-    try {
-      return await locator.click({ timeout: 8000, ...opts });
-    } catch {
-      return locator.click({ force: true, ...opts });
-    }
+    if (!(await page.locator('#JS_aliyun-captcha-dialog.show').count())) throw e;
+    await clearCaptcha(page);
+    return locator.click({ timeout: 8000, ...opts });
   }
 }
 

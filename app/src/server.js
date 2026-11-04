@@ -5,6 +5,14 @@ import { config } from './config.js';
 import * as db from './db.js';
 import { ensureVisitor, rateLimit } from './auth.js';
 import { qrContent } from './xxqg/client.js';
+import { TASK_NAMES, logText, userError } from './messages.js';
+
+function eventMessage(event) {
+  const payload = event.payload ? JSON.parse(event.payload) : null;
+  if (typeof payload?.text === 'string') payload.text = logText(payload.text);
+  if (typeof payload?.error === 'string') payload.error = userError(payload.error);
+  return { type: event.type, payload };
+}
 
 const app = express();
 app.set('trust proxy', 'loopback');
@@ -22,7 +30,7 @@ app.use((req, res, next) => {
 
 // ---------- 会话 ----------
 app.get('/api/me', (req, res) => {
-  res.json({ visitor: req.visitor, accounts: db.countUsers(req.visitor), maxAccounts: config.maxAccounts });
+  res.json({ visitor: req.visitor, accounts: db.countUsers(req.visitor), maxAccounts: config.maxAccounts, taskNames: TASK_NAMES });
 });
 
 app.get('/healthz', (req, res) => {
@@ -40,7 +48,7 @@ app.post('/api/login/start', (req, res) => {
 app.get('/api/login/:sid', async (req, res) => {
   const row = db.getLogin(req.params.sid);
   if (!row || row.visitor_id !== req.visitor) return res.status(404).json({ error: '会话不存在' });
-  const body = { status: row.status, error: row.error, uid: row.uid };
+  const body = { status: row.status, error: row.error ? userError(row.error) : null, uid: row.uid };
   if (row.status === 'waiting' && row.code) {
     body.qr = await QRCode.toDataURL(qrContent(row.code), { width: 220, margin: 1 });
   }
@@ -56,7 +64,7 @@ app.get('/api/login/:sid/events', (req, res) => {
   const timer = setInterval(() => {
     for (const e of db.eventsAfter(req.params.sid, after)) {
       after = e.seq;
-      res.write(`data: ${JSON.stringify({ type: e.type, payload: e.payload ? JSON.parse(e.payload) : null })}\n\n`);
+      res.write(`data: ${JSON.stringify(eventMessage(e))}\n\n`);
     }
   }, 1000);
   req.on('close', () => clearInterval(timer));
@@ -165,7 +173,7 @@ app.get('/api/jobs/:id/events', (req, res) => {
       for (const e of batch) {
         after = e.seq;
         idle = 0;
-        res.write(`id: ${e.seq}\ndata: ${JSON.stringify({ type: e.type, payload: e.payload ? JSON.parse(e.payload) : null })}\n\n`);
+        res.write(`id: ${e.seq}\ndata: ${JSON.stringify(eventMessage(e))}\n\n`);
       }
     } while (batch.length === 200);
     if (++idle > 30) {
@@ -174,7 +182,7 @@ app.get('/api/jobs/:id/events', (req, res) => {
     }
     const now = db.getJob(req.params.id);
     if (now && (now.status === 'done' || now.status === 'failed')) {
-      res.write(`event: end\ndata: ${JSON.stringify({ status: now.status, error: now.error })}\n\n`);
+      res.write(`event: end\ndata: ${JSON.stringify({ status: now.status, error: now.error ? userError(now.error) : null })}\n\n`);
       clearInterval(timer);
       res.end();
     }

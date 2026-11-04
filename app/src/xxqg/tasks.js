@@ -140,7 +140,7 @@ async function readTips(page) {
     .filter(Boolean);
   // 弹层会盖住下面的选项，必须关掉，否则后面的点击全被吞掉
   await page.keyboard.press('Escape').catch(() => {});
-  await page.locator('.q-header').first().click({ force: true }).catch(() => {});
+  await page.locator('.q-header').first().click({ timeout: 1500 }).catch(() => {});
   await page.waitForTimeout(250);
   return tips;
 }
@@ -317,7 +317,6 @@ export async function quiz(kind, { jar, progress, uid, jobId }) {
 
       const next = page.locator('.action-row > button').first();
       if (!(await next.count())) break;
-      if (n >= 4) log('[dbg] ' + (await page.locator('.action-row').first().innerHTML().catch(() => '')).replace(/\\s+/g, ' ').slice(0, 160) + ' modal=' + (await page.locator('.ant-modal').count()));
 
       // 没提示 / 没匹配上时按钮是禁用的，先补选，别卡死
       for (let t = 0; t < 6; t++) {

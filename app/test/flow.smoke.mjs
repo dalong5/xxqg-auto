@@ -74,9 +74,17 @@ try {
   await page.locator('#verificationImage').click({ position: { x: 200 / viewport.width * box.width, y: 140 / viewport.height * box.height } });
   assert.equal(await pending, null);
   // 超过一批的历史事件也必须完整送达，不能先宣布结束。
-  for (let i = 0; i < 210; i++) db.addEvent(jobId, null, 'log', { text: `event-${i}` });
+  db.addEvent(jobId, null, 'step', { text: '▶ 开始 daily' });
+  db.addEvent(jobId, null, 'log', { text: '[dbg] <div class="action-row">modal=0</div>' });
+  db.addEvent(jobId, null, 'error', { error: 'locator.click: Timeout 6000ms exceeded\nCall log: private-browser-details' });
+  for (let i = 0; i < 210; i++) db.addEvent(jobId, null, 'log', { text: `历史日志-${i}` });
   db.finishJob(jobId);
-  await page.getByText('event-209', { exact: false }).waitFor({ timeout: 15000 });
+  await page.getByText('历史日志-209', { exact: false }).waitFor({ timeout: 15000 });
+  const visibleLogs = await page.locator('#log').innerText();
+  assert.match(visibleLogs, /开始 每日答题/);
+  assert.match(visibleLogs, /正在检查答题页面状态/);
+  assert.match(visibleLogs, /操作等待超时/);
+  assert.doesNotMatch(visibleLogs, /daily|\[dbg\]|<div|locator\.|private-browser-details/);
   await page.locator('#verification').waitFor({ state: 'hidden', timeout: 10000 });
   await page.waitForTimeout(1200);
   assert.equal(syncRequests, 0, '任务结束不应自动循环查分');
