@@ -16,3 +16,4 @@ uitest.mjs
 !app/research/
 !app/research/**
 logs/
+dist/
