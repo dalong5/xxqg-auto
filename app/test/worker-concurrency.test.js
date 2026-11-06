@@ -13,8 +13,9 @@ const finished = new Set();
 let release;
 const barrier = new Promise(resolve => { release = resolve; });
 mock.module('../src/db.js', { exports: {
+  getJob: () => ({ status: 'running' }), finishPausedJob() {},
   getUser: uid => ({ sealed_cookie: seal({ account: uid }) }),
-  enqueueScheduledJobs() {}, scheduledJobError: () => null, pauseScheduleForJob() {},
+  scheduledJobError: () => null,
   setUserScore() {}, addEvent() {}, beat() {}, requeueDeadJobs() {}, trimEvents() {}, deleteStaleLogins() {},
   claimJob: kind => kind === 'run' ? queue.shift() || null : null,
   finishJob: id => finished.add(id), failJob: id => finished.add(id),

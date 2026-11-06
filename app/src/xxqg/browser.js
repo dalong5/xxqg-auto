@@ -7,6 +7,7 @@ import * as db from '../db.js';
 const pageJobs = new WeakMap();
 
 let browser = null;
+let launching = null;
 
 const LAUNCH_ARGS = [
   '--no-sandbox',
@@ -20,22 +21,28 @@ const LAUNCH_ARGS = [
 
 export async function getBrowser() {
   if (browser?.isConnected()) return browser;
-  browser = await chromium.launch({
+  if (launching) return launching;
+  launching = chromium.launch({
     // 本机有 Chrome 用 Chrome，容器里用 CHROME_PATH 指向 chromium
     channel: config.chromePath ? undefined : process.env.CHROME_CHANNEL || 'chrome',
     executablePath: config.chromePath || undefined,
     headless: true,
     args: LAUNCH_ARGS,
-  });
-  browser.on('disconnected', () => {
-    browser = null;
-  });
-  return browser;
+  }).then(instance => {
+    browser = instance;
+    instance.on('disconnected', () => {
+      if (browser === instance) browser = null;
+    });
+    return instance;
+  }).finally(() => { launching = null; });
+  return launching;
 }
 
 export async function closeBrowser() {
-  if (browser) await browser.close().catch(() => {});
-  browser = null;
+  if (launching) await launching.catch(() => {});
+  const current = browser;
+  if (current) await current.close().catch(() => {});
+  if (browser === current) browser = null;
 }
 
 // 抹掉自动化痕迹：webdriver、空 plugins、chrome 对象、WebGL 厂商
@@ -83,7 +90,7 @@ function loadProfile(uid) {
  * 开一个会话。同一个账号复用上次的 localStorage/设备态，避免每次都是"新设备"。
  * 调用方负责 close()。
  */
-export async function newSession(jar, { uid, jobId } = {}) {
+export async function newSession(jar, { uid, jobId, shouldStop } = {}) {
   const b = await getBrowser();
   const state = uid ? loadProfile(uid) : undefined;
   const ctx = await b.newContext({
@@ -97,7 +104,7 @@ export async function newSession(jar, { uid, jobId } = {}) {
   await ctx.addInitScript(STEALTH);
   if (jar) await ctx.addCookies(jar.toPlaywrightCookies());
   const page = await ctx.newPage();
-  if (jobId) pageJobs.set(page, { jobId, uid });
+  if (jobId) pageJobs.set(page, { jobId, uid, shouldStop });
 
   const close = async () => {
     if (uid) {
@@ -115,7 +122,13 @@ export async function newSession(jar, { uid, jobId } = {}) {
 }
 
 /** 随机停顿，模拟人；太快容易被判机器 */
-export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export async function sleep(ms, checkPause) {
+  if (!checkPause) return new Promise(resolve => setTimeout(resolve, ms));
+  for (let remaining = ms; remaining > 0; remaining -= 1000) {
+    checkPause();
+    await sleep(Math.min(1000, remaining));
+  }
+}
 export const jitter = (base, spread = 4000) => base + Math.floor(Math.random() * spread);
 
 const CAPTCHA_DIALOG = '#JS_aliyun-captcha-dialog.show';
@@ -131,6 +144,7 @@ export async function clearCaptcha(page) {
   let lastFrame = 0;
   try {
     while (await page.locator(CAPTCHA_DIALOG).count()) {
+      job.shouldStop?.();
       if (Date.now() > deadline) throw new Error('人工验证超时，请重新运行任务');
       if (db.getJob(job.jobId)?.status !== 'running') throw new Error('任务已停止');
       if (Date.now() - lastFrame > 1000) {

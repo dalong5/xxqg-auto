@@ -54,7 +54,7 @@ export async function learn(kind, { jar, progress, shouldStop, uid, jobId }) {
   }
 
   const items = await feed(kind);
-  const { page, close } = await newSession(jar, { uid, jobId });
+  const { page, close } = await newSession(jar, { uid, jobId, shouldStop });
   try {
     await page.goto('https://www.xuexi.cn/notFound.html', { waitUntil: 'domcontentloaded' });
     await clearCaptcha(page);
@@ -94,6 +94,7 @@ export async function learn(kind, { jar, progress, shouldStop, uid, jobId }) {
       let lastLog = 0;
       try {
         await dwell(page, seconds, (left) => {
+          shouldStop?.();
           // 每秒回调太吵，6 秒一条就够看
           if (Date.now() - lastLog < 6000 && left > 1) return;
           lastLog = Date.now();
@@ -178,7 +179,7 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
   if (!task) return `${cfg.name}当前未开放，跳过`;
   if (task.done >= task.max) return `${cfg.name}已满分，跳过`;
 
-  const { page, close } = await newSession(jar, { uid, jobId });
+  const { page, close } = await newSession(jar, { uid, jobId, shouldStop });
   const log = progress.note || (() => {});
   try {
     await page.goto('https://pc.xuexi.cn/points/my-points.html', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -223,7 +224,7 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
       if (kind === 'daily') {
         const seconds = 20 + Math.floor(Math.random() * 41);
         log(`阅读本题，等待 ${seconds} 秒后作答`);
-        await sleep(seconds * 1000);
+        await sleep(seconds * 1000, shouldStop);
         if (shouldStop?.()) throw new Error('任务执行时间已到，停止答题');
         await clearCaptcha(page);
       }

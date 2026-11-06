@@ -41,10 +41,6 @@
   #log { height:300px; overflow:auto; background:#0b0d11; border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:12px/1.7 ui-monospace,Consolas,monospace; color:#b9c2d0; white-space:pre-wrap; }
   #log .ok { color:var(--grn); } #log .bad { color:#ff6b6b; } #log .step { color:var(--amb); } #log .dim { color:#6b7482; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  .week-times { display:grid; grid-template-columns:repeat(auto-fit,minmax(90px,1fr)); gap:10px; margin:12px 0; }
-  .week-times label { display:grid; gap:5px; }
-  input[type="time"] { width:100%; box-sizing:border-box; font:inherit; background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:6px; }
-  fieldset { border:0; padding:0; margin:0; min-width:0; }
   @media (max-width:760px){ .grid { grid-template-columns:1fr; } }
 </style>
 </head>
@@ -80,19 +76,6 @@
     </div>
   </section>
 
-  <section class="card">
-    <h2>每周自动任务 · 北京时间</h2>
-    <p class="hint">适用于本浏览器绑定的所有账号，每天每账号自动运行一次：签到、阅读、视听、每日答题。尚未实现的订阅、发表观点、本地频道和趣味答题不包含在内。</p>
-    <fieldset id="scheduleFields" disabled>
-      <label><input type="checkbox" id="scheduleEnabled"> 启用自动任务</label>
-      <div class="week-times" id="scheduleTimes"></div>
-      <button id="btnSaveSchedule">保存自动任务计划</button>
-    </fieldset>
-    <p id="scheduleStatus" role="status" aria-live="polite">正在读取计划…</p>
-    <p id="schedulePaused" class="hint" role="status"></p>
-    <p class="hint">关闭网页不影响运行，服务和执行器需要保持在线。登录失效、安全验证或定时任务失败会暂停对应账号，重新扫码后恢复。关闭计划只停止新增任务。</p>
-  </section>
-
   <div class="grid">
     <section class="card">
       <h2>任务进度（含每周项目）</h2>
@@ -103,7 +86,10 @@
         <button id="btnArticle">只阅读</button>
         <button id="btnVideo">只视听</button>
         <button id="btnQuiz">只答题</button>
+        <button id="btnPause" disabled>暂停任务</button>
+        <button id="btnResume" hidden>继续任务</button>
       </div>
+      <p class="hint" id="taskStatus" role="status" aria-live="polite"></p>
       <div class="hint" style="margin-top:10px">阅读/视听每篇要真停留 60 秒左右，一项都别急着关页面。</div>
     </section>
 
@@ -127,6 +113,7 @@ let accounts = [];
 let maxAccounts = null;
 let taskNames = {};
 let loadVersion = 0;
+let renderedAccount = null;
 let stream = null;
 let followedJob = null;
 let loginStream = null;
@@ -175,54 +162,6 @@ async function api(url, opts) {
   return data;
 }
 
-['周一', '周二', '周三', '周四', '周五', '周六', '周日'].forEach((day, index) => {
-  const label = document.createElement('label');
-  label.textContent = day;
-  const input = document.createElement('input');
-  input.type = 'time'; input.id = `scheduleTime${index}`; input.required = true;
-  input.setAttribute('aria-label', `${day}自动运行时间`);
-  label.appendChild(input); $('scheduleTimes').appendChild(label);
-});
-let scheduleVersion = 0;
-let scheduleSaving = false;
-let scheduleSnapshot = '';
-let scheduleUpdatedAt = 0;
-function scheduleValue() {
-  return { enabled: $('scheduleEnabled').checked, times: Array.from({ length: 7 }, (_, i) => $(`scheduleTime${i}`).value) };
-}
-function renderSchedule(schedule, fill) {
-  if (fill) {
-    $('scheduleEnabled').checked = schedule.enabled;
-    schedule.times.forEach((time, index) => { $(`scheduleTime${index}`).value = time; });
-    scheduleSnapshot = JSON.stringify(scheduleValue());
-    scheduleUpdatedAt = schedule.updatedAt;
-    $('scheduleFields').disabled = false;
-  }
-  const next = schedule.nextAt ? new Intl.DateTimeFormat('zh-CN', { timeZone: schedule.timeZone, dateStyle: 'medium', timeStyle: 'short' }).format(schedule.nextAt) : '';
-  $('scheduleStatus').textContent = schedule.enabled ? `已启用；下次计划：${next}（北京时间）。待处理问题的账号会跳过。` : '自动任务未启用';
-  $('schedulePaused').textContent = schedule.pausedAccounts.map(paused => {
-    const account = accounts.find(a => a.uid === paused.uid);
-    return `${account?.nick || paused.uid}：自动任务已暂停，${paused.reason}；重新扫码后恢复。`;
-  }).join(' ');
-}
-async function loadSchedule() {
-  if (scheduleSaving) return;
-  const version = ++scheduleVersion;
-  const schedule = await api('/api/schedule');
-  if (version === scheduleVersion) renderSchedule(schedule, $('scheduleFields').disabled || JSON.stringify(scheduleValue()) === scheduleSnapshot);
-}
-$('btnSaveSchedule').onclick = async () => {
-  if (!$('scheduleFields').reportValidity()) return;
-  scheduleSaving = true; ++scheduleVersion;
-  $('scheduleFields').disabled = true;
-  try {
-    const value = { ...scheduleValue(), updatedAt: scheduleUpdatedAt };
-    const schedule = await api('/api/schedule', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
-    renderSchedule(schedule, true);
-  } catch (error) { $('scheduleStatus').textContent = `计划保存失败：${error.message}`; }
-  finally { scheduleSaving = false; $('scheduleFields').disabled = false; }
-};
-
 function renderScore(score) {
   if (!score) return;
   $('funHint').hidden = !score.tasks?.[12] || score.tasks[12].done >= score.tasks[12].max;
@@ -238,12 +177,20 @@ function renderScore(score) {
 }
 
 function renderAccount() {
+  const snapshot = JSON.stringify({ accounts, user, maxAccounts });
+  if (snapshot === renderedAccount) return;
+  renderedAccount = snapshot;
+  const status = user?.active_job_status;
+  $('btnPause').hidden = status === 'paused';
+  $('btnPause').disabled = !user?.active_job || !['queued', 'running'].includes(status);
+  $('btnResume').hidden = status !== 'paused';
+  $('taskStatus').textContent = status === 'pausing' ? '正在暂停，等待当前页面操作结束…' : status === 'paused' ? '任务已暂停。继续时回查官方进度，已获得积分保留；未完成的一题或材料可能重新进入。' : '';
   const select = $('accountSelect');
   select.replaceChildren();
   for (const account of accounts) {
     const option = document.createElement('option');
     option.value = account.uid;
-    option.textContent = `${account.nick || account.uid}（${account.uid}）${account.active_job ? ' · 任务中' : ''}`;
+    option.textContent = `${account.nick || account.uid}（${account.uid}）${account.active_job_status === 'paused' ? ' · 已暂停' : account.active_job_status === 'pausing' ? ' · 正在暂停' : account.active_job ? ' · 任务中' : ''}`;
     select.appendChild(option);
   }
   select.disabled = !accounts.length;
@@ -281,7 +228,7 @@ async function load(preferredUid) {
   if (user) sessionStorage.setItem('selectedUser', user.uid);
   else sessionStorage.removeItem('selectedUser');
   renderAccount();
-  if (user?.active_job && user.active_job !== followedJob) followJob(user.active_job);
+  if (user?.active_job && user.active_job_status !== 'paused' && user.active_job !== followedJob) followJob(user.active_job);
 }
 
 $('accountSelect').onchange = () => {
@@ -290,7 +237,7 @@ $('accountSelect').onchange = () => {
   user = accounts.find(account => account.uid === $('accountSelect').value) || null;
   if (user) sessionStorage.setItem('selectedUser', user.uid);
   renderAccount();
-  if (user?.active_job) followJob(user.active_job);
+  if (user?.active_job && user.active_job_status !== 'paused') followJob(user.active_job);
 };
 
 // ---------- SSE ----------
@@ -325,7 +272,7 @@ function followJob(jobId, uid = user?.uid || '') {
   es.addEventListener('end', e => {
     if (stream !== es || (uid && user?.uid !== uid)) return;
     const result = JSON.parse(e.data);
-    log(result.status === 'done' ? '任务已完成' : `任务未完成：${result.error || '执行中断，请查看前面的提示'}`, result.status === 'done' ? 'ok' : 'bad');
+    log(result.status === 'paused' ? '任务已暂停，可点击继续任务' : result.status === 'done' ? '任务已完成' : `任务未完成：${result.error || '执行中断，请查看前面的提示'}`, result.status === 'done' ? 'ok' : result.status === 'paused' ? 'step' : 'bad');
     stopFollowing();
     load().catch(e => log(e.message, 'bad'));
   });
@@ -341,6 +288,9 @@ async function run(tasks) {
     });
     if (user?.uid !== uid) return;
     user.active_job = d.jobId;
+    user.active_job_status = d.status || 'queued';
+    renderAccount();
+    if (d.status === 'paused') return log('当前任务已暂停，请点击继续任务', 'step');
     log(`已入队：${tasks.map(task => taskNames[task] || '学习任务').join(' / ')}（队列 ${d.queued}）`, 'step');
     followJob(d.jobId);
   } catch (e) { log(e.message, 'bad'); }
@@ -353,6 +303,9 @@ async function refresh() {
     const d = await api(`/api/users/${encodeURIComponent(uid)}/sync`, { method: 'POST' });
     if (user?.uid !== uid) return;
     user.active_job = d.jobId;
+    user.active_job_status = d.status || 'queued';
+    renderAccount();
+    if (d.status === 'paused') return log('当前任务已暂停，请点击继续任务', 'step');
     followJob(d.jobId);
   } catch (e) { log(e.message, 'bad'); }
 }
@@ -403,8 +356,27 @@ $('btnArticle').onclick = () => run(['article']);
 $('btnVideo').onclick = () => run(['video']);
 $('btnQuiz').onclick = () => run(['daily']);
 $('btnSync').onclick = refresh;
+async function controlTask(action) {
+  if (!user?.active_job) return;
+  const uid = user.uid;
+  const jobId = user.active_job;
+  const button = $(action === 'pause' ? 'btnPause' : 'btnResume');
+  button.disabled = true;
+  try {
+    const result = await api(`/api/jobs/${encodeURIComponent(jobId)}/${action}`, { method: 'POST' });
+    if (user?.uid !== uid || user.active_job !== jobId) return;
+    user.active_job_status = result.status;
+    renderAccount();
+    if (result.status !== 'paused') followJob(jobId);
+    else stopFollowing();
+  } catch (e) { if (user?.uid === uid) log(e.message, 'bad'); }
+  finally { button.disabled = false; renderedAccount = null; await load().catch(e => log(e.message, 'bad')); }
+}
+$('btnPause').onclick = () => controlTask('pause');
+$('btnResume').onclick = () => controlTask('resume');
 $('btnClear').onclick = () => ($('log').innerHTML = '');
 $('btnSelf').onclick = async () => {
+  if (user?.active_job_status === 'paused') return log('当前任务已暂停，请点击继续任务', 'step');
   if (user?.active_job) { followJob(user.active_job); log('已接回当前答题任务，请先完成安全验证', 'step'); return; }
   const d = await api('/api/selftest', { method: 'POST' });
   log('开始浏览器自检（不需要账号）', 'step');
@@ -422,8 +394,6 @@ async function beat() {
 beat();
 setInterval(beat, 5000);
 setInterval(() => load().catch(() => {}), 5000);
-loadSchedule().catch(e => { $('scheduleStatus').textContent = e.message; });
-setInterval(() => loadSchedule().catch(() => {}), 20000);
 const savedJob = sessionStorage.getItem('activeJob');
 const savedJobUser = sessionStorage.getItem('activeJobUser');
 api('/api/me').then(me => { maxAccounts = me.maxAccounts; taskNames = me.taskNames || {}; renderAccount(); }).catch(e => log(e.message, 'bad'));

@@ -72,4 +72,38 @@ test('unbind rejects queued and running tasks without losing account credentials
   assert.equal(db.deleteUser('unbind', 'guard').changes, 1);
 });
 
+test('event replay seeks by job and cursor while preserving isolation and order', () => {
+  db.db.exec('BEGIN');
+  try {
+    for (let i = 0; i < 1200; i++) db.addEvent(`history-${i % 3}`, null, 'log', { text: `记录-${i}` });
+    db.db.exec('COMMIT');
+  } catch (error) { db.db.exec('ROLLBACK'); throw error; }
+  const first = db.eventsAfter('history-1');
+  assert.equal(first.length, 200);
+  assert.equal(JSON.parse(first[0].payload).text, '记录-1');
+  const second = db.eventsAfter('history-1', first.at(-1).seq);
+  assert.equal(second.length, 200);
+  assert.equal(JSON.parse(second[0].payload).text, '记录-601');
+  assert.ok(second.every((event, i) => !i || event.seq > second[i - 1].seq));
+  const plan = db.db.prepare('EXPLAIN QUERY PLAN SELECT seq, type, payload, created_at FROM events WHERE job_id = ? AND seq > ? ORDER BY seq LIMIT 200').all('history-1', first.at(-1).seq).map(row => row.detail).join('\n');
+  assert.match(plan, /USING (?:COVERING )?INDEX.*job_id=\?/, 'replay must seek within one job instead of scanning other accounts events');
+});
+
+test('dead workers recover once and repeated crashes stop without affecting live tasks', () => {
+  const live = db.enqueue({ kind: 'recovery-live', visitorId: 'recovery' });
+  db.claimJob('recovery-live', 'live-worker');
+  db.beat('live-worker');
+  const interrupted = db.enqueue({ kind: 'recovery-dead', visitorId: 'recovery' });
+  db.claimJob('recovery-dead', 'dead-worker');
+  assert.equal(db.requeueDeadJobs(), 1);
+  assert.equal(db.getJob(live).status, 'running');
+  assert.equal(db.getJob(interrupted).status, 'queued');
+  db.claimJob('recovery-dead', 'dead-worker-again');
+  db.requeueDeadJobs();
+  assert.equal(db.getJob(interrupted).status, 'failed');
+  assert.match(db.getJob(interrupted).error, /执行器多次中断/);
+  assert.equal(db.eventsAfter(interrupted).at(-1).type, 'error');
+  assert.equal(db.requeueDeadJobs(), 0, 'failed tasks cannot loop after repeated worker crashes');
+});
+
 test.after(() => { db.db.close(); rmSync(process.env.DATA_DIR, { recursive: true, force: true }); });

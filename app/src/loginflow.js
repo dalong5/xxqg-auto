@@ -53,7 +53,7 @@ export async function driveLogin(sid) {
       if (r.status === 'scanned') {
         await secureCheck(jar, r.tmpCode, state);
         const user = await userInfo(jar);
-        const progress = await score(jar).catch(() => null);
+        const progress = await score(jar);
         upsertUser({
           uid: user.uid,
           visitorId: row.visitor_id,

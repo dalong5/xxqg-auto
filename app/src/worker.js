@@ -32,6 +32,11 @@ function jobUser(job) {
   if ((job.visitor_id && job.visitor_id !== user.visitor_id) || (job.loginGeneration !== undefined && job.loginGeneration !== user.login_generation)) {
     throw new Error('账号登录或归属已更新，旧任务已停止，请重新发起任务');
   }
+  if (db.getJob(job.id)?.status === 'pausing') {
+    const error = new Error('任务已暂停');
+    error.code = 'TASK_PAUSED';
+    throw error;
+  }
   job.loginGeneration = user.login_generation;
   return user;
 }
@@ -145,7 +150,7 @@ const HANDLERS = {
 
     const runners = {
       login: async () => {
-        const { page, close } = await newSession(jar, { uid: job.uid, jobId: job.id });
+        const { page, close } = await newSession(jar, { uid: job.uid, jobId: job.id, shouldStop: opts.shouldStop });
         try {
           await page.goto('https://pc.xuexi.cn/points/my-points.html', { waitUntil: 'domcontentloaded' });
           await page.waitForTimeout(6000);
@@ -174,6 +179,7 @@ const HANDLERS = {
         const msg = await runners[name]();
         log(job, `✔ ${taskName(name)}：${msg}`, 'ok');
       } catch (e) {
+        if (e.code === 'TASK_PAUSED') throw e;
         log(job, `✘ ${taskName(name)} 失败：${userError(e.message || e)}`, 'bad');
         throw e;
       }
@@ -187,7 +193,10 @@ const HANDLERS = {
         throw new Error('登录态失效，任务尚未完成');
       }
       // 任务之间歇一会儿，别像脚本一样连着冲
-      if (name !== tasks.at(-1)) await new Promise((r) => setTimeout(r, 15000 + Math.floor(Math.random() * 30000)));
+      if (name !== tasks.at(-1)) {
+        const until = Date.now() + 15000 + Math.floor(Math.random() * 30000);
+        while (Date.now() < until) { jobUser(job); await pause(Math.min(1000, until - Date.now())); }
+      }
     }
 
     const final = await patchScore(job);
@@ -206,12 +215,15 @@ async function runTaskJob(job) {
   }
   try {
     await HANDLERS[job.kind](job);
-    db.finishJob(job.id);
+    if (db.finishJob(job.id)?.status === 'paused') log(job, '任务已暂停，可点击继续任务');
   } catch (e) {
+    if (e.code === 'TASK_PAUSED') {
+      if (db.finishPausedJob(job.id)?.status === 'paused') log(job, '任务已暂停，可点击继续任务');
+      return;
+    }
     const message = String(e.message || e);
     const safetyStop = /\b(?:401|403|429)\b|captcha|slider|risk|security.?check|too many requests|rate.?limit|unauthorized|forbidden|验证|风控|账号异常|访问异常|登录.*失效|cookie.*失效|请求被拒绝/i.test(message);
-    const retry = !safetyStop && job.attempts < 2 && /ECONN|timeout|ETIMEDOUT/i.test(message);
-    if (!retry) db.pauseScheduleForJob(job, message, safetyStop);
+    const retry = !safetyStop && db.getJob(job.id)?.status !== 'pausing' && job.attempts < 2 && /ECONN|timeout|ETIMEDOUT/i.test(message);
     db.failJob(job.id, e.message || e, retry);
     db.addEvent(job.id, job.uid, 'error', { error: userError(e.message || e) });
   }
@@ -270,7 +282,6 @@ export async function startWorker() {
   await getBrowser().catch((e) => console.error('浏览器启动失败:', e.message));
   db.requeueDeadJobs();
   db.deleteStaleLogins();
-  db.enqueueScheduledJobs();
   console.log(
     `worker ${WORKER_ID} 就绪：任务并发 ${config.workerConcurrency}，登录并发 ${config.loginConcurrency} key=${config.keyFingerprint}`,
   );
@@ -282,7 +293,6 @@ export async function startWorker() {
     db.requeueDeadJobs();
     db.trimEvents();
     db.deleteStaleLogins();
-    db.enqueueScheduledJobs();
   }, 20_000).unref?.();
 
   setInterval(() => {

@@ -2,7 +2,6 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { config } from './config.js';
 import { seal } from './crypto.js';
-import { DEFAULT_TIMES, SCHEDULE_TASKS, validateSchedule, scheduleDay, scheduledAt, nextScheduledAt } from './schedule.js';
 
 const file = path.join(config.dataDir, 'app.db');
 export const db = new DatabaseSync(file);
@@ -160,6 +159,7 @@ export function upsertUser({ uid, visitorId, nick, jar, expiresAt }) {
          expires_at = excluded.expires_at,
          login_generation = users.login_generation + 1`,
     ).run(uid, visitorId, nick, seal(typeof jar === 'string' ? JSON.parse(jar) : jar), expiresAt, now());
+    db.prepare("UPDATE jobs SET status = 'failed', finished_at = ?, error = '账号归属已更新，原浏览器的暂停任务已停止' WHERE uid = ? AND visitor_id != ? AND status = 'paused'").run(now(), uid, visitorId);
     db.prepare('DELETE FROM schedule_pauses WHERE uid = ?').run(uid);
     db.exec('COMMIT');
     return getUser(uid);
@@ -172,7 +172,7 @@ export function upsertUser({ uid, visitorId, nick, jar, expiresAt }) {
 export const getUser = (uid) => db.prepare('SELECT * FROM users WHERE uid = ?').get(uid) || null;
 export const listUsers = (visitorId) =>
   db
-    .prepare("SELECT uid, nick, expires_at, created_at, last_run_at, CASE WHEN score_day = ? THEN last_score ELSE NULL END AS last_score, (SELECT id FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running') LIMIT 1) AS active_job FROM users WHERE visitor_id = ? ORDER BY created_at DESC")
+    .prepare("SELECT uid, nick, expires_at, created_at, last_run_at, CASE WHEN score_day = ? THEN last_score ELSE NULL END AS last_score, (SELECT id FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running','pausing','paused') LIMIT 1) AS active_job, (SELECT status FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running','pausing','paused') LIMIT 1) AS active_job_status FROM users WHERE visitor_id = ? ORDER BY created_at DESC")
     .all(today(), visitorId);
 export const countUsers = (visitorId) =>
   db.prepare('SELECT COUNT(*) AS n FROM users WHERE visitor_id = ?').get(visitorId).n;
@@ -199,7 +199,7 @@ export const setUserScore = (uid, score) => {
   return true;
 };
 export const deleteUser = (uid, visitorId) =>
-  db.prepare("DELETE FROM users WHERE uid = ? AND visitor_id = ? AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running'))").run(uid, visitorId);
+  db.prepare("DELETE FROM users WHERE uid = ? AND visitor_id = ? AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running','pausing','paused'))").run(uid, visitorId);
 
 // ---------- 任务队列（跨进程原子领取） ----------
 function insertJob({ kind, uid = null, visitorId, tasks = null }, at = now()) {
@@ -214,7 +214,7 @@ export function enqueue({ kind, uid = null, visitorId, tasks = null }) {
   db.exec('BEGIN IMMEDIATE');
   try {
     if (uid) {
-      const active = db.prepare("SELECT id FROM jobs WHERE uid = ? AND status IN ('queued','running') LIMIT 1").get(uid);
+      const active = db.prepare("SELECT id FROM jobs WHERE uid = ? AND status IN ('queued','running','pausing','paused') LIMIT 1").get(uid);
       if (active) {
         db.exec('COMMIT');
         return active.id;
@@ -229,80 +229,11 @@ export function enqueue({ kind, uid = null, visitorId, tasks = null }) {
   }
 }
 
-// ---------- 定时任务（北京时间，每账号每天最多一次） ----------
-export function getSchedule(visitorId, at = now()) {
-  const row = db.prepare('SELECT * FROM schedules WHERE visitor_id = ?').get(visitorId);
-  const times = row ? JSON.parse(row.times) : [...DEFAULT_TIMES];
-  const enabled = Boolean(row?.enabled);
-  const pausedAccounts = db.prepare('SELECT p.uid, p.reason FROM schedule_pauses p JOIN users u ON u.uid = p.uid WHERE u.visitor_id = ?').all(visitorId);
-  return { enabled, times, updatedAt: row?.updated_at || 0, timeZone: 'Asia/Shanghai', nextAt: enabled ? nextScheduledAt(times, at) : null, pausedAccounts };
-}
-
-export function saveSchedule(visitorId, value, at = now(), expectedUpdatedAt) {
-  validateSchedule(value);
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const previous = db.prepare('SELECT updated_at FROM schedules WHERE visitor_id = ?').get(visitorId)?.updated_at || 0;
-    if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== previous) {
-      const error = new Error('计划已在其他页面更改，请刷新网页后再保存');
-      error.status = 409;
-      throw error;
-    }
-    db.prepare(`INSERT INTO schedules (visitor_id, enabled, times, updated_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(visitor_id) DO UPDATE SET enabled = excluded.enabled, times = excluded.times, updated_at = excluded.updated_at`)
-      .run(visitorId, Number(value.enabled), JSON.stringify(value.times), Math.max(at, previous + 1));
-    db.exec('COMMIT');
-  } catch (error) { db.exec('ROLLBACK'); throw error; }
-  return getSchedule(visitorId, at);
-}
-
-export function enqueueScheduledJobs(at = now()) {
-  let queued = 0;
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const day = scheduleDay(at);
-    for (const row of db.prepare('SELECT * FROM schedules WHERE enabled = 1').all()) {
-      const due = scheduledAt(JSON.parse(row.times), at);
-      if (at < due || row.updated_at > due) continue;
-      for (const user of db.prepare('SELECT uid, expires_at FROM users WHERE visitor_id = ?').all(row.visitor_id)) {
-        if (db.prepare('SELECT 1 FROM schedule_pauses WHERE uid = ?').get(user.uid)) continue;
-        if (user.expires_at && user.expires_at <= at) {
-          db.prepare('INSERT OR IGNORE INTO schedule_pauses (uid, reason) VALUES (?, ?)').run(user.uid, '登录已过期，请重新扫码后恢复自动任务');
-          continue;
-        }
-        if (db.prepare('SELECT 1 FROM scheduled_runs WHERE uid = ? AND run_day = ?').get(user.uid, day)) continue;
-        if (db.prepare("SELECT 1 FROM jobs WHERE uid = ? AND status IN ('queued','running')").get(user.uid)) continue;
-        const id = insertJob({ kind: 'run', uid: user.uid, visitorId: row.visitor_id, tasks: SCHEDULE_TASKS }, at);
-        db.prepare('INSERT INTO scheduled_runs (uid, run_day, job_id) VALUES (?, ?, ?)').run(user.uid, day, id);
-        addEvent(id, user.uid, 'log', { text: '每周计划已触发，开始执行今日自动任务' });
-        queued++;
-      }
-    }
-    db.exec('COMMIT');
-    return queued;
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
-}
-
-export function scheduledJobError(job, at = now()) {
-  const row = db.prepare('SELECT r.run_day, u.visitor_id FROM scheduled_runs r LEFT JOIN users u ON u.uid = r.uid WHERE r.job_id = ?').get(job.id);
-  if (!row) return null;
-  if (row.visitor_id !== job.visitor_id) return '账号绑定已变更，已跳过原浏览器的定时任务';
-  if (row.run_day < scheduleDay(at)) return '已跳过往日未执行的定时任务，等待今天的计划';
-  return null;
-}
-
-export function pauseScheduleForJob(job, reason, safetyStop) {
-  if (!job.uid || (!safetyStop && !db.prepare('SELECT 1 FROM scheduled_runs WHERE job_id = ?').get(job.id))) return;
-  const user = getUser(job.uid);
-  if (!user) return;
-  const changed = db.prepare(`INSERT INTO schedule_pauses (uid, reason)
-    SELECT uid, ? FROM users WHERE uid = ? AND visitor_id = ? AND login_generation = ?
-    ON CONFLICT(uid) DO UPDATE SET reason = excluded.reason`)
-    .run(String(reason), job.uid, job.visitor_id ?? user.visitor_id, job.loginGeneration ?? user.login_generation).changes;
-  if (changed) addEvent(job.id, job.uid, 'bad', { text: '该账号的自动任务已暂停，请处理问题并重新扫码后恢复' });
+// 保留旧计划记录用于审计，升级后不得重新执行旧自动任务。
+export function scheduledJobError(job) {
+  return db.prepare('SELECT 1 FROM scheduled_runs WHERE job_id = ?').get(job.id)
+    ? '每周自动任务已移除，该历史计划任务已停止'
+    : null;
 }
 
 export function claimJob(kind, workerId) {
@@ -320,7 +251,26 @@ export function claimJob(kind, workerId) {
 }
 
 export const finishJob = (id) =>
-  db.prepare("UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?").run(now(), id);
+  db.prepare("UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ? AND status = 'running' RETURNING status").get(now(), id) || finishPausedJob(id);
+export const requestJobPause = (id, visitorId) =>
+  db.prepare(`UPDATE jobs SET status = CASE WHEN status IN ('queued','paused') THEN 'paused' ELSE 'pausing' END
+    WHERE id = ? AND kind = 'run' AND status IN ('queued','running','pausing','paused')
+      AND visitor_id = ? AND EXISTS (SELECT 1 FROM users WHERE uid = jobs.uid AND visitor_id = ?)
+    RETURNING status`).get(id, visitorId, visitorId);
+export function finishPausedJob(id) {
+  const owned = 'EXISTS (SELECT 1 FROM users WHERE uid = jobs.uid AND visitor_id = jobs.visitor_id)';
+  const result = db.prepare(`UPDATE jobs SET status = CASE WHEN ${owned} THEN 'paused' ELSE 'failed' END,
+    finished_at = CASE WHEN ${owned} THEN NULL ELSE ? END,
+    error = CASE WHEN ${owned} THEN NULL ELSE '账号归属已更新，原浏览器的暂停任务已停止' END
+    WHERE id = ? AND status = 'pausing' RETURNING status, uid, error`).get(now(), id);
+  if (result?.status === 'failed') addEvent(id, result.uid, 'error', { error: result.error });
+  return result;
+}
+export const resumeJob = (id, visitorId) =>
+  db.prepare(`UPDATE jobs SET status = 'queued', worker = NULL, started_at = NULL, finished_at = NULL, error = NULL, attempts = 0
+    WHERE id = ? AND kind = 'run' AND status = 'paused'
+      AND visitor_id = ? AND EXISTS (SELECT 1 FROM users WHERE uid = jobs.uid AND visitor_id = ?)
+    RETURNING status`).get(id, visitorId, visitorId);
 export const failJob = (id, error, retry = false) =>
   retry
     ? db.prepare("UPDATE jobs SET status = 'queued', error = ?, started_at = NULL WHERE id = ?").run(String(error), id)
@@ -342,15 +292,20 @@ const pruneWorkers = () => db.prepare('DELETE FROM workers WHERE seen_at < ?').r
  * 只回收心跳已停的 worker，避免把别人正在跑的任务抢走。
  */
 export function requeueDeadJobs() {
-  const changes = db
-    .prepare(
-      `UPDATE jobs SET status = 'queued', started_at = NULL
-       WHERE status = 'running'
-         AND (worker IS NULL OR worker NOT IN (SELECT id FROM workers WHERE seen_at > ?))`,
-    )
-    .run(now() - 90_000).changes;
+  const interrupted = db.prepare(`UPDATE jobs SET
+      status = CASE WHEN status = 'pausing' THEN 'pausing' WHEN attempts < 2 THEN 'queued' ELSE 'failed' END,
+      started_at = CASE WHEN status = 'pausing' OR attempts < 2 THEN NULL ELSE started_at END,
+      finished_at = CASE WHEN status = 'pausing' OR attempts < 2 THEN NULL ELSE ? END,
+      error = CASE WHEN status = 'pausing' OR attempts < 2 THEN error ELSE '执行器多次中断，任务已停止，请检查服务器资源后手动重试' END
+    WHERE status IN ('running','pausing')
+      AND (worker IS NULL OR worker NOT IN (SELECT id FROM workers WHERE seen_at > ?))
+    RETURNING id, uid, status, error`).all(now(), now() - 90_000);
+  for (const job of interrupted) {
+    if (job.status === 'failed') addEvent(job.id, job.uid, 'error', { error: job.error });
+    if (job.status === 'pausing' && finishPausedJob(job.id)?.status === 'paused') addEvent(job.id, job.uid, 'log', { text: '执行器中断，任务保持暂停，请手动继续' });
+  }
   pruneWorkers();
-  return changes;
+  return interrupted.length;
 }
 
 // ---------- 事件流 ----------

@@ -1,0 +1,28 @@
+# 同一主机共用 SQLite 和密钥：保留两个小执行器，新增 18 个执行名额。
+# 必须作为最后一个 Compose 文件；启动时不要另传 --scale 覆盖名额。
+services:
+  api:
+    environment:
+      MAX_ACCOUNTS: 20
+  worker:
+    environment:
+      MAX_ACCOUNTS: 20
+      WORKER_CONCURRENCY: 1
+    deploy:
+      replicas: 2
+  worker-bulk:
+    extends:
+      file: docker-compose.yml
+      service: worker
+    image: xxqg-worker:latest
+    environment:
+      INSTABOX_HEADLESS: "1"
+      MAX_ACCOUNTS: 20
+      WORKER_CONCURRENCY: 18
+      LOGIN_CONCURRENCY: 1
+    deploy:
+      replicas: 1
+    cpus: 1.0
+    mem_limit: 640m
+    memswap_limit: 1280m
+    shm_size: 128m
