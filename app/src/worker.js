@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { taskName, logText, userError } from './messages.js';
@@ -234,11 +235,42 @@ let taskRunning = 0;
 let loginRunning = 0;
 let stopping = false;
 
+/**
+ * 内存保护：并发名额可以开得比内存大，但不能把机器拖进 swap 抖动。
+ * 已经在跑任务、且可用内存低于阈值时，暂缓领取新任务（不中断已在跑的）。
+ * /proc/meminfo 在容器里通常反映宿主机内存，正好是我们想保护的量。
+ */
+const MIN_FREE_MB = Number(process.env.WORKER_MIN_FREE_MB ?? 200);
+let memGateLogged = 0;
+
+function availableMemMb() {
+  if (process.platform !== 'linux') return Infinity;
+  try {
+    const m = /MemAvailable:\s+(\d+)\s+kB/.exec(fs.readFileSync('/proc/meminfo', 'utf8'));
+    return m ? Math.round(Number(m[1]) / 1024) : Infinity;
+  } catch {
+    return Infinity;
+  }
+}
+
 async function taskLoop() {
   while (!stopping) {
     if (taskRunning >= config.workerConcurrency) {
       await pause(400);
       continue;
+    }
+    // 留一个任务在上面跑着，不让整机空闲；再多的名额要看内存
+    if (taskRunning > 0 || taskRunning >= 1) {
+      const free = availableMemMb();
+      if (free < MIN_FREE_MB) {
+        const now = Date.now();
+        if (now - memGateLogged > 60_000) {
+          console.warn(`[mem] 可用内存 ${free}MB < ${MIN_FREE_MB}MB，暂缓领取新任务`);
+          memGateLogged = now;
+        }
+        await pause(3000);
+        continue;
+      }
     }
     let job = null;
     for (const kind of TASK_KINDS) {

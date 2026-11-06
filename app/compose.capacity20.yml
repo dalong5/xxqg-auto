@@ -3,10 +3,10 @@
 services:
   api:
     environment:
-      MAX_ACCOUNTS: 20
+      MAX_ACCOUNTS: 50
   worker:
     environment:
-      MAX_ACCOUNTS: 20
+      MAX_ACCOUNTS: 50
       WORKER_CONCURRENCY: 1
     deploy:
       replicas: 2
@@ -17,12 +17,12 @@ services:
     image: xxqg-worker:latest
     environment:
       INSTABOX_HEADLESS: "1"
-      MAX_ACCOUNTS: 20
+      MAX_ACCOUNTS: 50
       WORKER_CONCURRENCY: 18
       LOGIN_CONCURRENCY: 1
     deploy:
       replicas: 1
     cpus: 1.0
-    mem_limit: 640m
-    memswap_limit: 1280m
+    mem_limit: 1100m
+    memswap_limit: 2200m
     shm_size: 128m
