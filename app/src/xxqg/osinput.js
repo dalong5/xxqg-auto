@@ -79,14 +79,83 @@ export function osInputAvailable() {
   return false;
 }
 
-/** 从手柄中心拖 distanceCss（CSS px）过去；返回实际使用的屏幕坐标 */
-export async function dragSliderBy(page, handle, distanceCss, { steps } = {}) {
-  if (!osInputAvailable()) throw new Error('当前环境没有可用的 OS 输入通道');
+/** 只移动指针（校准用） */
+export function movePointer(x, y) {
+  if (process.platform === 'win32') {
+    return new Promise((res, rej) => {
+      execFile(
+        'powershell.exe',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/native.ps1', '-Action', 'moveto', '-A1', String(x), '-A2', String(y)],
+        { cwd: process.cwd(), timeout: 20_000 },
+        (e, out, err) => (e ? rej(new Error((err || e.message).trim())) : res(out)),
+      );
+    });
+  }
+  if (process.platform === 'linux') {
+    return new Promise((res, rej) => {
+      execFile('xdotool', ['mousemove', '--sync', String(x), String(y)], { timeout: 20_000 }, (e, out, err) =>
+        e ? rej(new Error(`xdotool: ${(err || e.message).trim().slice(0, 200)}`)) : res(out),
+      );
+    });
+  }
+  return Promise.reject(new Error('没有可用的指针移动通道'));
+}
+
+/**
+ * 指针校准：把鼠标移到手柄中心，看页面报回的 clientX/clientY 差多少。
+ * 与其相信 screenX/outerHeight 的换算（有无 WM、工具栏高度、HiDPI 各不相同），
+ * 不如让页面自己报位置，再用差值修正 —— 这是 Xvfb 下最稳的做法。
+ */
+export async function calibratePointer(page, cssX, cssY) {
   const geo = await pageGeometry(page);
+  if (!geo) return null;
+  await page.evaluate(() => {
+    window.__probe = null;
+    if (!window.__probeBound) {
+      window.__probeBound = true;
+      window.addEventListener(
+        'mousemove',
+        (e) => {
+          window.__probe = { x: e.clientX, y: e.clientY, trusted: e.isTrusted };
+        },
+        true,
+      );
+    }
+  });
+  const guess = screenPoint(geo, cssX, cssY);
+  await movePointer(guess.x, guess.y);
+  await new Promise((r) => setTimeout(r, 150));
+  const seen = await page.evaluate(() => window.__probe).catch(() => null);
+  if (!seen) return { dx: 0, dy: 0, guess, geo, seen: null };
+  return { dx: cssX - seen.x, dy: cssY - seen.y, guess, geo, seen };
+}
+
+/** 从手柄中心拖 distanceCss（CSS px）过去；先用指针校准修正坐标偏移 */
+export async function dragSliderBy(page, handle, distanceCss, { steps, calibrate = true } = {}) {
+  if (!osInputAvailable()) throw new Error('当前环境没有可用的 OS 输入通道');
+  const cssX = handle.x + handle.width / 2;
+  const cssY = handle.y + handle.height / 2;
+
+  let geo = null;
+  let fixX = 0;
+  let fixY = 0;
+  if (calibrate) {
+    const cal = await calibratePointer(page, cssX, cssY).catch(() => null);
+    if (cal?.seen) {
+      geo = cal.geo;
+      fixX = cal.dx * geo.d;
+      fixY = cal.dy * geo.d;
+    }
+  }
+  geo = geo || (await pageGeometry(page));
   if (!geo) throw new Error('读不到页面几何');
-  const from = screenPoint(geo, handle.x + handle.width / 2, handle.y + handle.height / 2);
+
+  const from = screenPoint(geo, cssX, cssY);
+  from.x += Math.round(fixX);
+  from.y += Math.round(fixY);
   const to = { x: Math.round(from.x + distanceCss * geo.d), y: from.y };
+
   if (process.platform === 'win32') await dragWin32(from.x, from.y, to.x, to.y, steps ?? 34);
   else await dragX11(from.x, from.y, to.x, to.y, steps ?? 30);
-  return { from, to, geo };
+  return { from, to, geo, fix: { x: Math.round(fixX), y: Math.round(fixY) } };
 }

@@ -86,7 +86,8 @@ async function main() {
   const distance = Math.round(track.x + track.width - (handle.x + handle.width / 2) - 2);
   console.log(`几何：track=${Math.round(track.width)} handle=${Math.round(handle.width)} 目标距离=${distance}`);
 
-  const { from, to } = await dragSliderBy(page, handle, distance, { steps: 28 });
+  const { from, to, fix } = await dragSliderBy(page, handle, distance, { steps: 28 });
+  console.log(`校准：修正偏移 dx=${fix.x}px dy=${fix.y}px（页面回报的位置 vs 换算位置）`);
   console.log(`输入：(${from.x},${from.y}) → (${to.x},${to.y}) via ${process.platform === 'win32' ? 'SendInput' : 'xdotool'}`);
   await page.waitForTimeout(600);
 

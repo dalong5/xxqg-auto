@@ -80,6 +80,12 @@ switch ($Action) {
   'list' { Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { "$($_.Id) $($_.MainWindowTitle)" } }
   'title' { (Get-Process -Id (Get-Process chrome | Where-Object { $_.MainWindowHandle -eq $hwnd }).Id -ErrorAction SilentlyContinue).MainWindowTitle }
   'focus' { Focus-Win $hwnd; 'ok' }
+  'moveto' {
+    Focus-Win $hwnd
+    [N]::SetCursorPos([int]$A1, [int]$A2) | Out-Null
+    Start-Sleep -Milliseconds 120
+    'ok'
+  }
   'move' {
     Focus-Win $hwnd
     [N]::MoveWindow($hwnd, [int]$A1, [int]$A2, [int]$A3, [int]$A4, $true) | Out-Null

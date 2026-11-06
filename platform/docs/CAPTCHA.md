@@ -136,7 +136,49 @@ node --test "test/captcha-e2e.test.mjs"    # 3 个：真实浏览器 + 模拟阿
 - 真实皮肤的手柄/轨道选择器：等下一次验证码出现，用 `dumpCaptchaDom` 的输出补齐（当前有几何兜底：在容器内找 `cursor:grab` 或 24~64px 宽的窄条）。
 - 即使距离与轨迹都正确，仍可能被风控判 F001 拒绝；这类拒绝不应重试，直接转人工。
 
+## 10. Xvfb 方案与指针校准（2026-11-07 追加）
 
+服务器是 Linux 容器，没有桌面就没有 `SendInput`。方案：给容器一个虚拟显示，把鼠标输入换成 **XTest**。
+
+```
+Xvfb :99  →  DISPLAY=:99  →  Chromium（headed）→  xdotool mousemove/mousedown/mouseup
+```
+
+代码在 `app/src/xxqg/osinput.js`，两条后端共用同一套几何：
+
+| 平台 | 后端 | 事件来源 |
+| --- | --- | --- |
+| Windows | `native.ps1` → SendInput | Win32 输入队列 |
+| Linux | `xdotool` → XTest | X server |
+
+### 为什么必须有「指针校准」
+
+屏幕坐标不能靠 `screenX + outerHeight - innerHeight` 硬算：有没有窗口管理器、浏览器工具栏多高、HiDPI 缩放到多少，每种环境都不一样。所以流程改成：
+
+1. 用公式算一个**猜测**坐标，把鼠标移过去；
+2. 页面里的 `mousemove` 监听器回报**真实**的 `clientX/clientY`；
+3. 差值 `(期望 − 实际)` 作为修正量，加到拖动起点；
+4. 再执行 按下 → 分段移动 → 松开。
+
+本机实测这步修正了 `dy = −12px`（正是工具栏高度的估算误差）。没有它，Xvfb 下的“按下点”可能落在手柄外，拖动根本不触发。
+
+### 自检
+
+`app/deploy/xvfb-selftest.{sh,mjs}`：起 Xvfb → 原生 Chromium → 打开本地构造的模拟验证码页 → OS 拖动 → 断言页面记录的位移到终点。**不接触真实账号**。
+
+本机（Windows，后端 SendInput）实测：
+
+```
+几何：track=320 handle=40 目标距离=298
+校准：修正偏移 dx=0px dy=-12px
+输入：(133,298) → (729,298) via SendInput
+结果：页面记录拖动=280（期望 280），isTrusted=true
+PASS：OS 级输入到达页面并拖到终点
+```
+
+Linux/Xvfb 支尚未在真实 Linux 上执行过（本机无 WSL/Docker），脚本已就绪，服务器上一条命令即可验证。
+
+---
 
 解码只解决「拖到哪儿」，不解决「这次请求是否被判定为自动化」。历史实测：
 同一账号连续失败十几次后，即使换成原生浏览器 + 真实鼠标也会被抽样拦一次。
