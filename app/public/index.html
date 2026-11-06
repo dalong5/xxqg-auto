@@ -38,6 +38,8 @@
   .row.of i { background:#394659; }
   .num { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
   .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+  #accountActions button { min-height:44px; }
+  #taskStatus { margin:8px 0 0; }
   #log { height:300px; overflow:auto; background:#0b0d11; border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:12px/1.7 ui-monospace,Consolas,monospace; color:#b9c2d0; white-space:pre-wrap; }
   #log .ok { color:var(--grn); } #log .bad { color:#ff6b6b; } #log .step { color:var(--amb); } #log .dim { color:#6b7482; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
@@ -69,11 +71,14 @@
     <div id="acct"><div class="hint">还没有绑定账号</div></div>
     <div id="qrbox"><span class="hint">点下面按钮生成二维码</span></div>
     <div id="loginmsg" class="hint">用「学习强国」APP 扫码，扫完在手机上点确认，2 分钟内有效</div>
-    <div class="actions">
+    <div class="actions" id="accountActions">
       <button class="primary" id="btnLogin">生成登录二维码</button>
       <button id="btnSync">查当前积分</button>
+      <button class="primary" id="btnPause" disabled>暂停任务</button>
+      <button id="btnResume" disabled>继续任务</button>
       <button id="btnDel" hidden>解绑账号</button>
     </div>
+    <p class="hint" id="taskStatus" role="status" aria-live="polite">请先扫码登录，开始任务后可在这里暂停。</p>
   </section>
 
   <div class="grid">
@@ -86,10 +91,7 @@
         <button id="btnArticle">只阅读</button>
         <button id="btnVideo">只视听</button>
         <button id="btnQuiz">只答题</button>
-        <button id="btnPause" disabled>暂停任务</button>
-        <button id="btnResume" hidden>继续任务</button>
       </div>
-      <p class="hint" id="taskStatus" role="status" aria-live="polite"></p>
       <div class="hint" style="margin-top:10px">阅读/视听每篇要真停留 60 秒左右，一项都别急着关页面。</div>
     </section>
 
@@ -181,10 +183,9 @@ function renderAccount() {
   if (snapshot === renderedAccount) return;
   renderedAccount = snapshot;
   const status = user?.active_job_status;
-  $('btnPause').hidden = status === 'paused';
   $('btnPause').disabled = !user?.active_job || !['queued', 'running'].includes(status);
-  $('btnResume').hidden = status !== 'paused';
-  $('taskStatus').textContent = status === 'pausing' ? '正在暂停，等待当前页面操作结束…' : status === 'paused' ? '任务已暂停。继续时回查官方进度，已获得积分保留；未完成的一题或材料可能重新进入。' : '';
+  $('btnResume').disabled = !user?.active_job || status !== 'paused';
+  $('taskStatus').textContent = !user ? '请先扫码登录，开始任务后可在这里暂停。' : status === 'pausing' ? '正在暂停，等待当前页面操作结束…' : status === 'paused' ? '任务已暂停。继续时回查官方进度，已获得积分保留；未完成的一题或材料可能重新进入。' : status === 'queued' ? '任务正在排队，可点击“暂停任务”暂停排队。' : status === 'running' ? '当前账号正在执行任务，可点击“暂停任务”。' : '当前账号暂无任务，开始任务后可在这里暂停。';
   const select = $('accountSelect');
   select.replaceChildren();
   for (const account of accounts) {

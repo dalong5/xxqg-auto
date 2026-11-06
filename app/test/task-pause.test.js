@@ -67,6 +67,8 @@ test('pause and resume work through the UI without crossing accounts or overlapp
     for (const action of ['pause', 'resume']) assert.equal((await outsider.request.post(`${base}/api/jobs/${jobs.a}/${action}`)).status(), 404);
     await outsider.close();
     await page.reload();
+    assert.equal(await page.getByRole('button', { name: '暂停任务', exact: true }).isVisible(), true, 'pause stays visible after the task is paused');
+    assert.equal(await page.getByRole('button', { name: '暂停任务', exact: true }).isDisabled(), true);
     await page.getByRole('button', { name: '继续任务', exact: true }).click();
     await until(() => db.getJob(jobs.a).status === 'queued');
     await worker.startWorker();
@@ -96,6 +98,31 @@ test('pause and resume work through the UI without crossing accounts or overlapp
     await until(() => !db.db.prepare("SELECT 1 FROM jobs WHERE status IN ('running','pausing')").get());
     await browser?.close(); await new Promise(resolve => server.close(resolve));
   }
+});
+
+test('task controls remain visible immediately after score lookup in the account actions', async () => {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  let browser;
+  try {
+    browser = await chromium.launch({ channel: process.env.CHROME_CHANNEL || 'chrome', executablePath: process.env.CHROME_PATH || undefined, headless: true });
+    for (const width of [375, 1280]) {
+      const context = await browser.newContext({ viewport: { width, height: 667 } });
+      const page = await context.newPage();
+      await page.goto(`http://127.0.0.1:${server.address().port}`);
+      await page.waitForFunction(() => document.querySelector('#accountHint').textContent.includes('已绑定'));
+      for (const id of ['btnPause', 'btnResume']) {
+        const button = page.locator(`#${id}`);
+        assert.equal(await button.isVisible(), true);
+        assert.equal(await button.isDisabled(), true, 'without an account, controls are visible but disabled');
+        const bounds = await button.boundingBox();
+        assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width, 'controls must not overflow narrow screens');
+      }
+      assert.deepEqual(await page.locator('#btnPause').evaluate(el => [el.parentElement.id, el.previousElementSibling.id, el.nextElementSibling.id]), ['accountActions', 'btnSync', 'btnResume']);
+      assert.match(await page.locator('#taskStatus').innerText(), /扫码登录/);
+      await context.close();
+    }
+  } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }
 });
 
 test('a paused job cannot lock an account after it is rebound to another visitor', () => {
