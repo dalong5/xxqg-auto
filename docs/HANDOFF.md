@@ -1,137 +1,132 @@
-# 交接说明（给下一个 AI / 人）
+# 最新交接（2026-11-07）
 
-> **2026-11-06 更新（先看这段）**
->
-> 滑块问题已经定性并有对照实验证据，结论写在 [POSTMORTEM.md](./POSTMORTEM.md)，进度记在 [PROGRESS.md](./PROGRESS.md#2026-11-06-排障收口详见-docspostmortemmd)。三句话版本：
->
-> 1. **判据不是 CDP**：Playwright-Firefox（完全没有 CDP）同样过不去；只有「原生启动的 Chrome + 操作系统输入栈的鼠标」过了一次（2/5→5/5，27→32）。
-> 2. **卷子是页面级状态**：答题途中换浏览器 = 从 1/5 重来，所以「CDP 答题 + 普通 Chrome 交卷」这条设计上就走不通，已从代码里移除。
-> 3. **当前可跑的通道**：`XXQG_PLAIN_ONLY=1` → `plain.runDaily()`（同一页面里看提示、答题、翻页、完成、拖滑块）。它会偶发 Chrome 渲染进程崩溃，崩溃后只能整卷重来。
->
-> 还没闭环的一件事：登录态过期了，需要重新扫码后跑 `cd app && node research/check_daily.mjs` 验证加分闭环。
+## 当前上线状态（2026-11-07）
 
-写于 2026-11-03。当前**能拿的分已经全部拿到并验证**，唯一缺口是答题交卷被阿里云滑块 `F001` 卡住。请先读完再动手，很多坑已经踩过。
+- 本地 http://127.0.0.1:8101/ 与服务器 https://1.14.105.129/ 已加载暂停/继续功能；服务器发布快照 `20261107-task-pause`，本轮源码和部署记录随本次提交归档，Git 保存以提交记录为准。
+- 已启用 20 个逻辑执行名额（两个执行器各 1 个，加一个 18 个），每访客绑定额度 20。各账号独立上下文，同账号未结束任务包括 queued/running/pausing/paused，不允许重复运行。服务器只有约 1.7 GiB 内存，新增执行器限制 640 MiB、1 CPU；不能当作 20 个真实浏览器容量保证。
+- 每周自动计划的页面、接口和触发器已移除；旧计划全部关闭，历史表保留，旧计划任务不得恢复执行。手动“每周答题”题型保留。
+- 暂停在检查点退出并关闭当前账号会话后确认，释放名额；继续会回查官方进度。未完成材料或题目可能重新进入。归属变更、完成竞争、失联恢复和平台拒绝均有回归；连续执行器中断两次后失败，不无限重新入队。
+- BBR 与 fq 已开启并持久化；无需重启或新增端口。8099 仍只绑定 127.0.0.1，公网访问走 HTTPS。
+- 本地完整回归 53 通过；服务器隔离容器 52 通过、1 项 Windows 跳过；两端端到端与公网 HTTPS/匿名隔离/浏览器自检通过。真实账号不用于回归测试；用户自行发起的既有任务自然结束后才替换承载它的执行器。
+- 服务器 2 个账号的凭据、访客归属、登录代次及密钥与发布前基线一致；没有自动解码或绕过验证码。人工验证问题尚未实现自动通过，不承诺免验证或永不封号。
+- 详细行为见 `docs/TASK-PAUSE.md`、`docs/PARALLEL-ACCOUNTS.md`，运维与回滚见 `docs/TENCENT-DEPLOYMENT.md`。下方为历史记录，以本节为准。
 
-## 1. 目标与现状
 
-- 目标站点：学习强国 PC 网页版，扫码登录 + 自动做任务。
-- 已跑通并实测到账：扫码登录、每日登录 1 分、文章阅读 12/12、视听 12/12（含两项时长分）。
-- 今日总分 **27**，进度接口实测：`阅读 12/12`、`视听 12/12`、`登录 1/1`、`每日答题 0/5`。
-- 上限 45，**还差 18 分**（每日 5 + 每周 5 + 专项 8），三个都要走同一个交卷接口，全部止步于滑块。
-- 答题的**答题过程本身已经打通**：五题能全答、能点「完 成」、能出答案解析；卡在提交时要求的 `captchaVerifyParam`。
+## 最新服务器更新
 
-## 2. 跑起来
+- https://1.14.105.129/ 已部署 `20261106-163811-mvp-safety`，包含架构重构、浏览器并发/关闭修复、绘制优化、答题异常传播和登录查分失败保留暂停的修复。版本是本地工作区快照，未提交或推送 Git。
+- 本地 50 项通过；服务器 49 通过、1 项 Windows 专用跳过；容器端到端和正式公网 HTTPS/匿名隔离/浏览器自检/中文日志通过。
+- 账号、凭据、密钥、计划和暂停保持一致；服务器 2 个账号仍全部暂停，实际并发保持 1、每访客最多 10 个账号。没有执行真实学习或解验证码；没有新增公网端口。
+- 回滚镜像、源文件与私有数据备份见 [TENCENT-DEPLOYMENT.md](TENCENT-DEPLOYMENT.md)。下方“未部署”的内容是当时的历史记录，不代表当前线上版本。
 
-```bash
-cd app && npm install
-copy .env.example .env      # 改 APP_SECRET
-npm run dev                 # API + worker
-```
+## 本地测试与验证恢复修复
 
-Windows + DSH 沙箱下 Chromium 必须 `danger-full-access`。账号 cookie 在 `data/app.db` 的 `logins.jar`（AES-GCM 封存，`data/secret.key` 是密钥，7 天明文备份在 `logins.jar` 表里能自愈）。
+- 本地 API 和执行器已在无活跃任务、待扫码会话且本地计划关闭时重启，加载此前架构重构及最新登录恢复修复。50 项完整回归、端到端通过，服务地址仍为 http://127.0.0.1:8101/ 。未推送或部署服务器。
+- 登录时查分异常不再被吞掉：失败保留旧账号凭据和自动暂停，不将平台拒绝/验证状态误报为可恢复执行。详见 [VERIFICATION-RECOVERY.md](VERIFICATION-RECOVERY.md)。
+- 当前页面显示每日答题 5/5；本轮没有为测试重复答题或操作真实滑块，免人工验证仍未解决。原 42 项版本的源码包未更新为此后续修复。
 
-单跑一个任务：`node research/tmp_run.mjs <uid> daily`；同步分数：`node research/tmp_sync.mjs <uid>`。这些都必须在 `app/` 下跑。
+## 架构研读与行为保持重构（仅本地）
 
-## 3. 卡点：阿里云滑块 F001
+- 设计、数据流、表结构、API、UI、缓存、扩容与完整代码入口见 [MVP-DELIVERY.md](MVP-DELIVERY.md)。根因、边界与后续风险见 [REFACTOR-REVIEW.md](REFACTOR-REVIEW.md)。
+- HTTP 应用移到 `app/src/app.js`，原 `server.js` 只保留监听和退出；启动命令、路由与业务流程保持不变。
+- 共享浏览器启动 Promise，关闭等待启动完成，防旧实例断开清除新引用；相同账号快照跳过 DOM 重建。
+- SQLite 事件复合索引原本已经存在；查询计划回归确认生效，没有改库。保留登录失败语义、任务节奏、人工验证和真实积分回查。
+- 架构交付时未提交、推送、部署、重启现有服务或操作真实账号；随后本地测试的重启与后续修复状态见本页上方。架构重构验证结果见审查文档。
 
-### 已经确认的事实（都可复现）
+以下为此前实际部署与任务验证记录，不代表本轮代码已在服务器运行。
 
-- 页面前置：`Cookies.get('abnormal_exam')` 为真就弹滑块，否则直接 POST。`abnormal_exam` 是**阿里云 fp 写的 cookie**（`_c_WBKFRo` 同一批），每次进答题页必被写 1。
-- 交卷接口与载荷已逆向：`POST /api/exam/service/practice/quizSubmitV3`，体 `{uniqueId, questions:[{questionId, answers:[{answerId, value}], correct}], usedTime}`，成功要靠请求头 `captchaVerifyParam`。
-- 打桩 `window.initAliyunCaptcha = o => o.success('dummy')` 能拿到真实载荷，服务端回 `{"code":403,"message":"slider verify failed"}` —— 没有合法参数就是不收。
-- 删 `abnormal_exam` 只是让客户端跳过滑块，服务端照样 403。
-- 滑块本身是活的：`#aliyunCaptcha-sliding-slider.style.left` 从 0 变 320px，`elementFromPoint` 就是滑块，事件链 `pointerdown/mousedown/pointermove/mousemove/pointerup/mouseup` 全到，`movementX` 正常、`screenX = clientX + 窗口偏移` 正常、`isTrusted: true`。
-- 轨迹确实上报：`VerifyCaptchaV3` 的 `data` 密文 0 步 372B、60 步 720B（`probe_len3.mjs`）。
-- 但 `VerifyCaptchaV3` 恒回 `{"VerifyCode":"F001","VerifyResult":false}`。阿里云文档：`F001` = 被风控判定为攻击。
+## 验证错误传播修复（本轮仓库更新）
 
-### 已排除
+- 真实服务器画面确认滑块已正常显示；新一轮每日答题仍因人工验证超时失败，免人工验证尚未实现。
+- 修复答题步骤中的 23 处点击异常吞掉问题。验证或点击失败立即向上抛出，停止后续补选和交卷，保留原始原因供执行器判断暂停。
+- 新增回归复现：修复前把“人工验证超时”错误改写成“积分未达标”，修复后保留超时错误、只尝试一次点击，且不打印已提交的错误成功提示。
+- 本地完整回归 35 项全部通过。此项修复尚未重启部署到本地服务或服务器；正式服务器目前仍运行 ef4f4da 的每周计划及每题 20–60 秒版本。升级记录见 [腾讯云部署](TENCENT-DEPLOYMENT.md)。
 
-页面无焦点、DPR 1 vs 2、`--enable-automation` + `navigator.webdriver`（true/false/undefined 三种都试）、原生 Chrome 一切参数走 CDP、`Asia/Singapore` 时区对齐出口 IP、等 `InitCaptchaV3` 响应回来再拖、等待 0.2/1.2/2.5/20 秒再拖、拖动 0/5/20/30/40/45/60 步、10~2000ms 时长、起点居中/贴边、终点贴边/过冲、headless 与有头、**操作系统级真实鼠标**（`cua_driver` 对真实窗口 SendInput，`probe_hold.mjs` 停住等拖）、**中国出口代理**（`119.188.131.55:17981` 山东联通，`probe_px4.mjs`，照样 F001）。
+## 每周定时任务与答题节奏
 
-> 注意：**换中国 IP 也一样 F001**，所以别再往「境外 IP」这个方向想了。
+- 时间表按访客保存，作用于其全部绑定账号；北京时间周一至周日分别 09:00、10:00、11:00、14:00、15:00、16:00、17:00，每天一次，网页可改、可停。自动任务为签到、阅读、视听、每日答题，其他未实现项目不包含在内。
+- worker 启动和每 20 秒检查计划；SQLite 事务同时写任务和每日记录，多个 worker 和重启不会重复创建同账号当天的定时任务。忙碌时等已有任务结束，当天错过可补跑；新启用时已过当天时刻从次日开始，过期的旧日队列跳过。
+- 自动任务最终失败或任意任务收到风险/失效响应后，暂停对应账号；重新扫码恢复。登录代次防止旧请求覆盖新登录状态，执行前检查账号归属；跨标签页保存使用版本校验，拒绝旧配置覆盖新开关。
+- 每日答题每题（含最后一题）等待 20–60 秒后作答，中文日志提示等待时间，保留人工安全验证和任务预算检查。没有绕过或伪造验证，不能保证滑块不出现。
+- 本地完整回归 34 项通过；真实跨日自动获分和调整节奏后验证码是否出现仍未验证，不能当作已成功。部署实际状态见本次 outputs 中的运维记录。
+- 已更新到腾讯云服务器 https://1.14.105.129/ ，容器回归 33 通过、1 项 Windows 专用跳过，端到端及公网 HTTPS/执行器检查通过；保留原数据卷、密钥和旧镜像回滚标签。服务器原任务自然结束后才切换。
+- 正式服务器已有账号的每周计划已启用，下一次计划为 2026-11-05 14:00（北京时间）；该账号旧任务因人工验证超时失败，已安全暂停，需要在官方页面处理并重新扫码后恢复。不得把“计划启用”等同于账号已解除暂停。
+- 本地与服务器为同一账号，故关闭本地测试计划，仅保留服务器调度，防止跨实例重复触发；数据库事务去重仅作用于同一数据卷，不是跨服务器全局锁。
 
-第二轮补充（2026-11-03 深夜），全部照做仍是 F001，别再重复：
+以下段落包含历史迭代与旧服务器快照，不代表所有最新部署状态。
 
-- 阿里云官方错误码表：`F001` = 疑似攻击请求、风险策略不通过；另有 `F024` = 检测到自动化脚本模拟点击/滑动。
-- 官方问答明确写过：**开着 F12/devtools、触发敏感调试行为，就会被判 F001**（原文：「开启F12 devtools并触发敏感调试行为被风控拦截，不会影响正常用户，需要调试可在控制台开启测试模式」）。Playwright 全靠 CDP，等价于 devtools 常驻 —— **这是目前最像的成因**，下一轮优先验证。
-- 官方另一条：`captchaVerifyParam` 里的 `+` 若被转义成空格，服务端必判失败；本链路是页面自己拼 header，未发生，排除。
-- 一致性实验也无用：`--disable-blink-features=AutomationControlled`、`webdriver=false`、去掉 UA 的 `HeadlessChrome/`、有头、让 innerWidth/outerWidth/screen 三者一致（本机实际 CSS 屏 1280×720、DPR 1，原来写死 1440×900 viewport 反而是假指纹）。
+## 此前本地迭代记录
 
-### 还没试过的方向（按性价比排序）
+以下记载的是当时未部署的状态；其中 3e6af4b 及此前修改现已部署到腾讯云。旧 Instabox 状态另见后文。
 
-0. **验证「CDP = devtools」这条**：①最简单是让人在真 Chrome 里手动拖一次，若人能过而我们过不了，就锁定 CDP；②若锁定，试 `--remote-debugging-pipe` vs `--remote-debugging-port`、试 Puppeteer 旧版 `chrome-remote-interface`、试 Chrome 扩展注入脚本（无 devtools 协议痕迹）、试 `chrome.debugger` 之外的原生方案；③也可试开启阿里云控制台的「测试模式」（T005 直接放行，但那是租户级配置，学习强国未必开）。
-1. **把 `data` 解出来看结构**。密文是飞林加密，key 在 `fl6.js`/`fp.js` 里；解开就能看出它是「轨迹点数组」还是「设备指纹 + 轨迹」，也能知道字段是不是退化（比如时间戳全等、`x` 不走）。这是最有可能一击命中的方向。
-2. **直接打 `VerifyCaptchaV3`**（`https://1gjqf1.captcha-open.aliyuncs.com`，`Action=VerifyCaptchaV3`，参数见 `research/probe_dec2.mjs` 抓到的原文）。自己造 `data` 送上去，用响应二分出「哪一截数据被拒」，比在浏览器里盲调快得多。
-3. **换引擎**：Firefox 已装（`npx playwright install firefox`），但 `firefox.launch()` 在本机 180s 起不来，没深究；WebKit 同理没试。
-4. **`fp.min.js` 里找出设备指纹的输入项**，逐项和真实 Chrome 对齐（`probe_env.mjs` 已证明 WebGL 是真实 AMD 卡、canvas 稳定，`fl*`/`fp*` 里没有 `webdriver`/`isTrusted` 字样，说明检查更隐晦）。
-5. **录一段真人拖动的 `Log3` `Data` 做 golden sample**，握手时和我们的对比（需要人能拖一次成功的）。
-6. 换思路：手机端 H5（`study.xuexi.cn`）的答题是否也走同一家滑块，若不走就绕开 PC。
+- 执行日志中文化：统一中文任务名称、自检信息与错误提示；登录和任务事件流对历史日志也做显示转换，移除原始页面标记和调用栈。技术错误原文仍保留在任务错误记录中供诊断，不在网页直接展示。官方文章标题、题干按原文保留。
+- 账号安全优先：取消强制点击回退，只允许人工安全验证后正常重试点击；验证、异常、拒绝访问和限流响应不会因同时含有“超时”而触发网络重试。没有新增规避检测或绕过验证码的行为，不承诺第三方永不封号。
+- 本轮仅使用隔离测试数据；27 项回归与端到端全部通过，真实历史任务的事件流显示已确认不含 daily、调试页面代码等技术标识。本地服务已重启加载，服务器未部署这些修改。
 
-## 4. 仓库约定（务必遵守）
+- 每日答题故障已定位：服务器积分页 DOMContentLoaded 后 3 秒任务卡片为 0，约 15 秒后出现每日答题卡片；旧代码固定等 3 秒后立即 count，误报入口不存在。现在等待目标卡片可见，最长 45 秒，超时明确提示检查网络或重登。
+- 答题结果页出现后，先检查题干是否已消失，避免继续等待已移除的下一题按钮。
+- 用户重新扫码后，本地真实答题从 0/5 到官方确认 5/5。过程中发现结果页收尾等待；重启加载修复后，原任务自动回收，重新回查满分后跳过，状态 done、无错误、attempts=2。不能据此声称未部署的服务器版本已修复。
 
-`AGENTS.md` 里 8 条铁律都还有效，最容易犯的两条：
+- 账号列表请求使用递增版本号，忽略迟到的旧响应；显式扫码选择先保存，防止并行轮询覆盖选择。
+- 解绑在数据库单条 DELETE 内检查排队/运行任务，拒绝删除仍有任务的账号；接口校验归属，返回 404 或 409 并说明原因。
+- 补充乱序响应、任务中解绑与凭据保留测试，并修正越权测试使用不存在账号的问题，改测真实存在的另一个访客账号。
+- 每日答题修复时 npm test 为 22 项通过；日志与安全更新后为 27 项，npm run test:smoke 全部通过。回归测试使用隔离临时数据库；上述真实每日答题是此前用户扫码授权后单独执行的验证。
+- 本聊天已建立每天北京时间 09:30 的本地巡检；只维护本地，不推送、不部署，重要变化才通知。详见 CONTINUOUS-CHECKS.md。
 
-- **分数是唯一真相**：每步回查 `listScoreProgress`，到 `dayMaxScore` 就停，上限不许写死。
-- **不许盲刷**：阅读/视听这事伪造不了，必须真浏览器 + 停留 + 滚动；视频要 `muted = true` 再 `play()`。
+以下为已部署版本的交接，本地修复尚未应用到服务器。
 
-改完跑 `node --check`，重启前先杀 `dev.mjs|src/server.js|src/worker.js` 的 node 进程，再 `node research/tmp_clear.cjs` 清残留 job。
+多账号更新：页面支持账号选择并保持选择，积分、任务、日志及验证画面随账号切换；扫码成功自动选择该账号。服务器配置每个访客绑定 10 个、任务并发 2，同一账号仍串行。执行器编号附加启动 UUID，修复容器 PID 重用导致旧任务无法回收的问题。新增隔离的多账号浏览器回归和执行器循环并发测试；多个真实账号同时获分仍需用户授权扫码后验证。部署与运维见 SERVER-DEPLOYMENT.md。
 
-## 5. 尚未做
+网站地址：https://8102-agqygv2ih75pqruaad2qybxtqu.instabox.tech 。按用户要求移除网站访问用户名和密码，可直接打开；学习强国仍需 APP 扫码。不同浏览器的账号、任务与验证接口保持访客归属校验。
 
-- 定时调度（凌晨错峰）、多用户额度/邀请码、前端一键串流程。
-- Docker/部署只写了骨架（`app/Dockerfile`、`app/docker-compose.yml`），没在真机验证过。
-- GitHub 私有库推送（缺凭据）。
-## 2026-11-03 18:00 找到滑块病根：CDP 等同 devtools
+服务器目录 `/data/workspace/xxqg-auto/app`，使用本分支的 docker-compose.yml + compose.server.yml；数据卷 app_xxqg-data。Nginx 活动配置 `/www/server/panel/vhost/nginx/xxqg.conf` 的无凭据副本已保存为 app/deploy/nginx.conf，监听 8102，由 Instabox 网关提供 HTTPS。不要把 SSH 登录信息、Cookie、数据卷或密钥提交仓库。
 
-对照实验（同一账号、同一网络、同一台机器、同一时间窗，只改一个变量）：
+已部署版本验证：本地回归 19 项通过；容器 18 项通过、1 项 Windows 专用测试跳过；容器端到端、公网自检/SSE、免密访问通过。升级保留原账号及密钥，中断任务由新执行器回收并继续运行。
 
-| 条件 | 结果 |
+## 当前结论
+
+多账号网页登录与服务器运行已部署并通过隔离测试。2026-11-03 的真实单账号流程曾使当天积分由 27 升到 32，其中每日答题 5/5；以下是历史快照，不能当成当前积分。不能宣称纯浏览器获得全部积分或长期无人值守稳定。
+
+| 项目 | 2026-11-03 官方回查 |
 | --- | --- |
-| Playwright/CDP 附着浏览器，拖滑块 | 每次都 `{"code":403,"message":"slider verify failed"}`，F001 |
-| 同一 cookie 注入**普通 Chrome（无任何调试端口）**，人手级别真实鼠标拖 | **滑块通过，交卷成功，+2 分**，分数从 27 → 29 |
+| 登录 | 1/1 |
+| 阅读 | 12/12 |
+| 视听 | 12/12 |
+| 每日答题 | 5/5 |
+| 趣味答题 | 0/10，APP 原生接口，浏览器未实现 |
+| 发表观点 | 0/1，未找到网页执行入口 |
+| 本地频道 | 0/1，APP 内部频道，浏览器未实现 |
 
-操作方法：把 token/acw_tc/aliyungf_tc 以 Chrome v10（AES-256-GCM + DPAPI 解出的 key，明文前置 sha256(host_key)）直接写进 profile 的 Cookies 库，启动不带 `--remote-debugging-*` 的 Chrome，`pc.xuexi.cn/points/my-points.html` 正常登录。
+这些是当天快照，不是永久积分规则。完整清单使用 deviceType=1，上限读 dayMaxScore；一个积分组可能包含多个 taskCode，不能把这些重复相加。
 
-两个额外坑（都已解决）：
+## 已完成的修复
 
-1. Chrome 137+ 起 `--load-extension` 被特性开关关掉，加 `--disable-features=DisableLoadExtensionCommandLineSwitch` 也不够，本机 156 实测仍不生效 → 放弃插件，直接写 Cookies 库。
-2. **cookie 必须 `is_httponly=0`**。写 `1` 时 `pc-api.xuexi.cn/open/api/user/info` 能过（服务端读得到），但点开 `points/*.html` 一律 302 到 `points/login.html`——页面自己的登录判定是 JS 读 cookie（和 `abnormal_exam` 同一套 js-cookie），HttpOnly 的 token 它看不见。
-3. 写 cookie 前 Chrome 必须完全退出，否则写进去的行会被丢弃；`expires_utc` 用整数（BigInt 会被丢）。
+- 积分逐篇刷新绑定、动态上限及最终回查。
+- 每日答题答错后解析页的“下一题”状态处理。
+- 验证码由用户亲自操作；实时画面和输入转发已端到端验证。
+- 切到别的日志后丢失验证画面、日志重连和超过 200 条历史事件。
+- 主凭据加密、并发密钥原子发布、SQLite 启动锁等待。
+- 账号额度移到实际绑定事务，同账号可重新扫码。
+- 挂起扫码会话过期、跨天缓存清除与任务预算从实际开始计时。
+- Windows 独立后台启动/停止脚本，避免服务依赖工具会话生命周期。
 
-由此确定后续方向：**把「交卷 + 滑块」从 CDP 里搬到无调试端口的浏览器**（答题仍可用 Playwright 提速，交卷前关掉 CDP 浏览器，再由原生输入完成最后一步）。这是继「关掉 devtools 就行」之后唯一被实验证实的路子。
-## 2026-11-03 23:35 Firefox 也不行：问题不在 CDP
+## 验证
 
-用 Playwright 自驱的 **Firefox**（Juggler 协议，浏览器里根本没有 CDP/devtools）跑同一套答题逻辑：
+app 下运行 npm test、npm run test:smoke。多账号测试另覆盖正确账号任务入队、选择持久化、积分/日志/验证隔离、扫码返回数值 UID 后自动选择账号、两个账号并行且各自使用独立凭据。服务器构建与部署验证以 SERVER-DEPLOYMENT.md 为准。
 
-- 进页面、查看提示、答题全部正常（`第 6 题 [单选题]` 一路推进）；
-- 到「完成」后的滑块：`[captcha] attempt 1/2/3 sliderX 452 -> 452`，三次回弹，交卷依旧 `slider verify failed`。
+## 接手顺序
 
-结论修正：**F001 不是「有 CDP」触发的**。同一账号下能过的只有一次 —— 那次是「无调试端口的普通 Chrome + 真实 OS 鼠标（SendInput）拖拽」。所以真正的判据是**输入是不是来自操作系统输入栈**（SDK 采集的是 pointer 轨迹/时序/`sourceCapabilities` 这一类），而不是自动化协议本身。
+1. git status 检查是否有用户改动，先保留。
+2. 阅读 docs/WORKFLOW-VERIFICATION.md 和 app/README.md，检查 /healthz。
+3. 检查当天真实积分，不沿用本文件的数值。
+4. 有明确故障时先复现、加测试，再做最小修复。
 
-后续唯一线路：普通 Chrome（无 `--remote-debugging-*`）+ 预置 cookie + OS 级鼠标键盘（`scripts/native.ps1`），答题用页面内 JS 读题 + 生成坐标，点击/拖拽全部走 SendInput。
-## 2026-11-03 23:45 每日答题跑通（5/5）
+## 运行与凭据
 
-`app/src/xxqg/plain.js` + `app/scripts/native.ps1` 这一套今天实测把每日答题从 2/5 打到 **5/5**（总分 27 → 32）：
+本机配置为 PORT=8101，WORKER_CONCURRENCY=1；配置在忽略的 .env 内。源码不含真实账号凭据。主密钥 data/secret.key 保持不变；logins.jar 的 7 天明文备份与 profiles 必须按密码保管。重启电脑后使用 app/scripts/start-background.ps1 启动。
 
-1. `seedProfile()`：DPAPI 解 key，把 token/acw_tc/aliyungf_tc 以 Chrome v10 写进 `data/plain/<uid>`（`is_httponly=0`）。
-2. `open()`：**不带任何 `--remote-debugging-*`** 启动 Chrome，`MoveWindow(0,0,2800,1700)`（2x 屏，坐标=物理像素）。
-3. 读页面：地址栏拼 `javascript:void(...)`（分三段粘贴：正文 / `:` / `javascript`，避开 Chrome 剥 scheme 和中文输入法全角冒号），结果写 `document.title`，Node 侧读窗口标题。
-4. **答案来源就是页面自己的「查看提示」**：点 `.q-footer-answer-tip-wrap .tips` 后，`div.answer` 里出现 `正确答案：B` + 解析。
-5. 点击/拖拽全部走 `scripts/native.ps1`（`SetProcessDPIAware` + `SetCursorPos`/`mouse_event`），即真实 OS 输入。
-6. `.action-row button:last-child` 先 `scrollIntoView({block:'center'})` 再取矩形，否则 2x 屏下按钮 y 会超出窗口高度、点到桌面上。
-7. 完成 → 滑块 `#aliyunCaptcha-sliding-slider` 拖到 `#aliyunCaptcha-sliding-body` 右缘（34 步 / ~900ms）→ **通过**，分数落库。
+## 尚待观察
 
-同一路径在 Firefox（无 CDP）里拖滑块仍然失败，所以判据是「输入来自 OS 输入栈」，不是协议。
+多个真实账号同时计分、跨天新积分、cookie 自然失效后的重登及长期运行，以及第三方页面或验证策略变更。不要为了巡检发布观点、解验证码或虚构计分。
 
-踩过并已修的坑：`javascript:` 返回值是字符串会替换整页（必须 `void()` 包裹）；PowerShell 5.1 非 DPI 感知导致坐标被虚拟化；ps1 里非 ASCII 注释会让 PowerShell 解析失败（已改 ASCII 注释 + BOM）；`--load-extension` 在 Chrome 156 失效。
-## 2026-11-04 23:00 现状：代码就绪，卡在登录态
-
-- 11-04 18:47 定时任务把账号跑挂了：`cookie 已失效，请重新扫码`。之后 `open/api/user/info` 直接失败、`score` 返回空壳，所以**今天没有任何分数**，也没法验证滑块。
-- 11-03 23:45 那次实测证明：**无 CDP 普通 Chrome + 真实 OS 鼠标**能把每日答题交卷成功（2/5 → 5/5，总分 27 → 32）。这条路径已经产品化：
-  - `app/src/xxqg/plain.js`：`runDaily(uid, jar)` 一条龙（seed cookie → 开卷 → 看提示作答 → 完成 → 拖滑块 → 关浏览器）；
-  - `app/scripts/native.ps1`：DPI 感知的 SendInput（点击/拖拽/粘贴）；
-  - `app/src/xxqg/tasks.js`：每日答题默认先走这条；失败不再自动回退必挂的 CDP 通道（要回退设 `XXQG_PLAIN_FALLBACK=1`）。
-- 11-04 新增抗卡题：按钮没点亮就补选全部选项 / 补满空位；同一题卡 4 次才放弃（之前 14 轮耗尽在 5 道题上，报「没有完成按钮」）。
-- 自检脚本：`cd app && node research/check_daily.mjs`（先打登录态、跑一遍、再对分数，一行一个结论）。
-
-**下一步（只差这一件事）**：重新扫码拿到新 token，然后跑 `node research/check_daily.mjs`，确认「跑完 每日答题 5/5 ✅」。
+app/research 中的抓包和历史研究仅作排障证据，保留原文件；旧版“唯一卡点”“45 分上限”以及继续逆向验证码的建议已经过时，不作为当前实施计划。

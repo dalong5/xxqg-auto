@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 
 # Chromium + 中文字体：页面要真实渲染，缺字体中文会变方块
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,10 +10,11 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     CHROME_PATH=/usr/bin/chromium \
     CHROME_CHANNEL= \
     DATA_DIR=/data \
+    HOST=0.0.0.0 \
     PORT=8099
 
-COPY package.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 COPY . .
 
 EXPOSE 8099

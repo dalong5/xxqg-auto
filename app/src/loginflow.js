@@ -1,4 +1,4 @@
-import { db, getLogin, updateLogin, upsertUser, addEvent } from './db.js';
+import { db, getLogin, updateLogin, upsertUser, setUserScore, addEvent } from './db.js';
 import { Jar, getSign, newQrCode, pollQr, secureCheck, userInfo, score } from './xxqg/client.js';
 
 /**
@@ -53,7 +53,7 @@ export async function driveLogin(sid) {
       if (r.status === 'scanned') {
         await secureCheck(jar, r.tmpCode, state);
         const user = await userInfo(jar);
-        const progress = await score(jar).catch(() => null);
+        const progress = await score(jar);
         upsertUser({
           uid: user.uid,
           visitorId: row.visitor_id,
@@ -61,6 +61,7 @@ export async function driveLogin(sid) {
           jar: JSON.stringify(jar.toJSON()),
           expiresAt: Date.now() + 20 * 24 * 3600 * 1000,
         });
+        if (progress) setUserScore(user.uid, progress);
         updateLogin(sid, { status: 'done', uid: user.uid, jar: JSON.stringify(jar.toJSON()) });
         emit('done', { uid: user.uid, nick: user.nick, score: progress });
         return;

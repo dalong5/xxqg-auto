@@ -1,118 +1,57 @@
-> **接手先读**：`docs/HANDOFF.md`（现状 / 唯一卡点 / 试过什么 / 下一步）和 `app/research/README.md`（现场证据与复现方式）。
-> **2026-11-06 排障结论**：`docs/POSTMORTEM.md` —— 滑块判据是「浏览器是否被自动化框架驱动」（不是 CDP 本身）；卷子是页面级状态，不能跨浏览器交接；每日答题现走 `XXQG_PLAIN_ONLY=1` 的原生 Chrome 通道。
-> 账号 cookie 不在库（`data/` 已忽略），接手要重新扫码登录。
+# 学习站点：多账号网页登录与任务
 
-# 学习强国自动签到 / 做任务站点：方案与实现
+学习强国扫码登录、积分查询和网页任务执行器。支持绑定多个账号、切换查看积分与任务；安全验证仍需要用户亲自处理。
 
-> 运行手册在 [`app/README.md`](app/README.md)。这份文档讲**为什么这么做、协议长什么样、上线要什么**。
+本地架构与重构交付（2026-11-06）：[交付入口](docs/MVP-DELIVERY.md)、[架构/目录/数据表/缓存](docs/ARCHITECTURE.md)、[API 契约](docs/API.md)、[问题与修复证据](docs/REFACTOR-REVIEW.md)。完整代码在 `app/`；本轮未推送或部署，不代表公开运营验收完成。
 
-当前形态：**单账号测试版**（一个人先跑通），底层已经是「API + worker + 队列 + 加密存储」的多人结构，开放给别人时只改配置和并发。
+## 本次合并保留的本地新增（2026-11-07）
 
----
+合并 `codex/reliable-single-account-20261103`（多账号、暂停/继续、部署文档）时，以下两条本地能力被完整保留并接入：
 
-## 1. 边界先说清
+1. **滑块缺口自动解码**（`platform/src/domain/captcha/`）：拼图块与背景做 alpha 包围盒 + 二维像素匹配求出真实缺口，再按 ease-out 轨迹拖动。
+   - 已接入 `app/src/xxqg/browser.js::clearCaptcha()`：**先自动解码，通过即返回；不通过才进入原来的人工验证通道**（人工通道逻辑一行未改）。
+   - 文档：[platform/docs/CAPTCHA.md](platform/docs/CAPTCHA.md)；测试：`platform/test/slider.test.mjs`、`platform/test/captcha-e2e.test.mjs`（真实浏览器 + 模拟阿里云 DOM，误差 ≤3px）。
+2. **无 CDP 普通 Chrome 通道**（`app/src/xxqg/plain.js` + `app/scripts/native.ps1`）：预置 cookie 到独立 profile，用地址栏 `javascript:void(...)` 探针读页面、OS 级鼠标点击/拖拽，用于 CDP 被风控拦下的场景。当前是可选模块，未接入默认任务流。
+3. **产品化 MVP**（`platform/`）：独立的 API+Worker 架构、8 张表、SSE 日志、定时、多租户额度，30 项测试；与 `app/` 共用同一套缺口解码器。
 
-| 问题 | 结论 |
+
+## 当前能力
+
+| 功能 | 实际状态 |
 | --- | --- |
-| 能做吗 | 能。扫码登录、签到、阅读、视听、每日/每周/专项答题都能自动化 |
-| 一天多少分 | Web 端约 45 分，实际以接口 `dayMaxScore` 为准 |
-| 能满分吗 | 不能只靠 Web。挑战答题、四人赛、双人对战、订阅/分享/评论是 APP 独有，要补得加 ADB + 模拟器或 APP 签名协议 |
-| 登录 | 强国 PC 端是 APP 扫码 OAuth，协议已还原，纯 HTTP 完成，不需要浏览器 |
-| 任务 | 必须真实浏览器：阅读/视听的分是页面内 SDK 按停留时长上报的 |
-| 主要风险 | 反爬（滑块/指纹/headless）、二维码 2 分钟过期、cookie 约 20 天失效、单号 40~60 分钟的并发成本 |
+| APP 扫码登录 | 已实测，密钥一致时可复用登录态；失效后可重新扫码 |
+| 完整积分清单 | 已实现，使用手机端清单，动态读取每项上限 |
+| 网页登录、阅读、视听 | 已有执行器；2026-11-03 账号回查分别为 1/1、12/12、12/12 |
+| 每日答题 | 2026-11-03 真实运行并回查确认 5/5，当天积分 27 → 32 |
+| 验证码接手 | 网站展示实时画面，转发用户亲自操作；超时失败 |
+| 趣味答题 | 只支持进度查询；官方页面依赖 APP 原生桥，未验证出纯浏览器执行路径 |
+| 发表观点、本地频道 | 只支持进度查询；未找到可用纯浏览器执行入口 |
+| 每周、专项答题 | 有历史代码，当前账号清单未开放，未做真实执行验证 |
+| 多账号 | 每个浏览器默认绑定 10 个；服务器同时执行 2 个账号，同一账号串行，其他排队 |
+| HTTPS 服务器部署 | Docker + Nginx，网站直接访问，学习账号仍需扫码，见 [服务器部署](docs/SERVER-DEPLOYMENT.md) |
+| 定时无人值守、长期多人运营 | 未验证 |
 
-架构一句话：**登录走协议（便宜稳），任务走浏览器（真实能计分），中间用队列和加密 cookie 串起来。**
+最新状态和下一步请读 [docs/HANDOFF.md](docs/HANDOFF.md)。运行说明见 [app/README.md](app/README.md)，验证与已知风险见 [docs/WORKFLOW-VERIFICATION.md](docs/WORKFLOW-VERIFICATION.md)。
 
----
+## 快速启动
 
-## 2. 架构
+需要 Node 24 和本机 Chrome。
 
+```powershell
+cd app
+npm ci
+Copy-Item .env.example .env
+npm run dev
 ```
-浏览器 ──①扫码/点任务──▶ API(Express)  ──②落库──▶ SQLite(WAL)
-   ▲                        │                      ▲
-   └──⑤SSE 日志/分数────────┘                      │③原子领取
-                                                   │
-                        Worker(Playwright) ────────┘
-                              │④注入 cookie、真停留、交卷
-                              ▼
-                        学习强国页面（自己计分）
-```
 
-- **API 进程只做轻活**：签名、二维码、状态机、入队、SSE。没有浏览器，可多副本。
-- **Worker 进程干重活**：领任务、开隔离上下文、跑页面。崩了重启不影响别人扫码。
-- **任务用 DB 原子领取**（`UPDATE … RETURNING`），多 worker 不会重复跑同一单。
-- **登录和任务分两个池**：登录只走 HTTP，`LOGIN_CONCURRENCY=30`；任务受内存限制，默认 1。
+默认访问 http://127.0.0.1:8099/。本次机器因 8099 被其他服务使用，在未入库的 .env 设置 PORT=8101，访问 http://127.0.0.1:8101/。
 
-模块与职责见 [`app/README.md`](app/README.md#5-目录)。
+Windows 独立后台运行：在 app 下执行 powershell -NoProfile -File scripts/start-background.ps1；停止时加 -Stop。该脚本不配置开机自启，也不运行自动学习计划。
 
----
+## 维护原则
 
-## 3. 协议（2026-11 实测）
+积分必须从平台回查；点击按钮或结束循环不算成功。不得写死每日总上限，不得将 APP 任务显示成可自动执行。
 
-### 3.1 扫码登录
+主账号 cookie 使用 AES-256-GCM 加密。按仓库既有约定，登录表保留 7 天明文恢复备份，浏览器 profile 也可能包含登录态，因此整个 data 目录必须按密码保管。data、.env、密钥、账号信息与调试截图不得入库。
 
-1. `GET https://pc-api.xuexi.cn/open/api/sns/sign` → `{data:{sign}}`（OAuth state）
-2. `GET https://login.xuexi.cn/user/qrcode/generate` → `{result:"qr:UUID"}`
-3. 渲染 `https://login.xuexi.cn/login/qrcommit?showmenu=false&code=<result>&appId=dingoankubyrfkttorhpou`
-4. `POST https://login.xuexi.cn/login/login_with_qr`（form `qrCode / goto=https://oa.xuexi.cn / pdmToken`）→ `11021` 待扫、`11019` 过期、`success` 带 `loginTmpCode`
-5. `GET https://pc-api.xuexi.cn/login/secure_check?code=<loginTmpCode>&state=<sign>` → Set-Cookie
-6. `GET https://pc-api.xuexi.cn/open/api/user/info` → `{uid, nick}`
-
-### 3.2 积分
-
-`/delegate/score/get`、`/delegate/score/today/query`、`/delegate/score/days/listScoreProgress?sence=score&deviceType=2`
-
-`taskCode`：`1` 阅读文章、`2` 视听学习、`9` 每日登录、`1002` 文章时长、`1003` 视听时长、`6` 每日答题、`5` 每周答题、`4` 专项答题。
-
-### 3.3 内容与答案
-
-- 文章/视频源：`https://www.xuexi.cn/lgdata/<id>.json`
-- 答题答案：题目自带「查看提示」，答案在 `<font>` 标签里
-
-> 旧项目（xxqg-helper、TechXueXi）还在用 Selenium 截二维码推钉钉，登录其实不需要浏览器；它们也在用「查看提示」当答案源，说明这条路是对的。
-
----
-
-## 4. 关键取舍
-
-1. **分数驱动**：每步回查进度，够了就停，不盲刷。
-2. **停留要真**：每篇 60 秒起步、逐段下滑、滚到底，短了不计分。
-3. **cookie 当密码**：AES-256-GCM 加密落盘，密钥走环境变量；401 立即判失效。
-4. **不硬猜题**：提示取不到就跳过，宁可少分不交白卷。
-5. **并发靠加 worker**：单上下文 200~300MB，8C16G 单机 4~6 并发封顶；容器 `shm_size` 给 1GB。
-6. **限流**：登录 12 次/分/IP；每访客账号数有上限。
-
----
-
-## 5. 上线要做的
-
-- Nginx 反代 + HTTPS；SSE 路由关 `proxy_buffering`，`proxy_read_timeout` 调大
-- `APP_SECRET` 换成真随机；数据卷独立备份
-- 上量换 Postgres（`src/db.js` 的 SQL 直接迁），限流换 Redis
-- 站点默认谁都能用；给外人用就配 `INVITE_CODE`（不配=全开放），额度用 `MAX_ACCOUNTS` 兜底
-- 定时任务已内置：每个账号存一个 `HH:mm`，服务端每分钟扫一次到点入队，并自动加 0~20 分钟抖动防整点挤压
-- 需要更像真人时用 `XXQG_HEADED=1` 起有头浏览器（服务器上配 Xvfb）
-- 监控：`/healthz` 看 worker 心跳与积压；选择器失配要有告警
-- 合规：非官方工具，账号风险自担；商用注意各开源项目 LICENSE
-
----
-
-## 6. 路线图
-
-| 阶段 | 内容 | 状态 |
-| --- | --- | --- |
-| P0 | 协议登录、单账号界面、阅读/视听/答题、积分回查 | 已实现，待你真号验证 |
-| P1 | 失败重试、选择器健康检查、滑块打磨 | 待做 |
-| P2 | 多用户额度、Postgres、调度与掉线提醒 | 邀请码 + 每访客额度 + 每日定时**已实现**；Postgres/提醒待做 |
-| P3 | 模拟器补挑战答题/四人赛/双人对战 | 待做 |
-| P4 | 本站登录、报表、计费 | 待做 |
-
----
-
-## 7. 已实测 / 待验证
-
-已实测：签名与二维码接口、二维码解码正确、页面到二维码全链路、多会话并发互不串号、队列任务跑通（含 SSE 结束事件）、越权读取 404。
-
-待验证：真实扫码换 cookie、停留是否稳定涨分、答题页选择器是否仍匹配线上。
-
-先按 [`app/README.md`](app/README.md) 的第 1 节走一遍。
+测试：app 下运行 npm test 和 npm run test:smoke。端到端测试使用临时数据库和随机端口，不操作真实账号。

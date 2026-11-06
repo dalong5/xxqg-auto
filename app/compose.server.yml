@@ -1,0 +1,13 @@
+services:
+  api:
+    ports: !override
+      - "127.0.0.1:8099:8099"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8099
+      MAX_ACCOUNTS: 10
+  worker:
+    environment:
+      INSTABOX_HEADLESS: "1"
+      MAX_ACCOUNTS: 10
+      WORKER_CONCURRENCY: 2

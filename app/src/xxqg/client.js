@@ -55,7 +55,7 @@ async function request(jar, url, { method = 'GET', form, json } = {}) {
     headers['content-type'] = 'application/json;charset=UTF-8';
     body = JSON.stringify(json);
   }
-  const res = await fetch(url, { method, headers, body, credentials: 'include' });
+  const res = await fetch(url, { method, headers, body, credentials: 'include', signal: AbortSignal.timeout(30000) });
   jar.absorb(res);
   const text = await res.text();
   let data = null;
@@ -64,6 +64,8 @@ async function request(jar, url, { method = 'GET', form, json } = {}) {
   } catch {
     data = { raw: text };
   }
+  if (!res.ok) throw new Error(`平台请求失败 HTTP ${res.status}`);
+  if ([401, 403].includes(Number(data?.code))) throw new Error(`登录失效或请求被拒绝 (${data.code})`);
   return { res, data };
 }
 
@@ -99,7 +101,8 @@ export async function pollQr(jar, code, state) {
     const url = new URL(data.data);
     return { status: 'scanned', tmpCode: url.searchParams.get('loginTmpCode'), state };
   }
-  if (data?.code === '11019') return { status: 'expired' };
+  if (String(data?.code) === '11019') return { status: 'expired' };
+  if (data?.code != null && String(data.code) !== '11021') throw new Error('扫码确认失败，请重新生成二维码');
   return { status: 'waiting' };
 }
 
@@ -124,6 +127,11 @@ export const TASK_CODES = {
   1: '阅读文章',
   2: '视听学习',
   9: '每日登录',
+  10: '订阅',
+  11: '发表观点',
+  12: '趣味答题',
+  14: '本地频道',
+  15: '强国运动（每周）',
   1002: '文章时长',
   1003: '视听时长',
   6: '每日答题',
@@ -132,11 +140,14 @@ export const TASK_CODES = {
 };
 
 export async function score(jar) {
-  const total = (await request(jar, `${config.proxyHost}/delegate/score/get`)).data?.data?.score ?? 0;
-  const today = (await request(jar, `${config.proxyHost}/delegate/score/today/query`)).data?.data?.score ?? 0;
+  const total = (await request(jar, `${config.proxyHost}/delegate/score/get`)).data?.data?.score;
+  const today = (await request(jar, `${config.proxyHost}/delegate/score/today/query`)).data?.data?.score;
   const progress =
-    (await request(jar, `${config.proxyHost}/delegate/score/days/listScoreProgress?sence=score&deviceType=2`)).data?.data
-      ?.taskProgress ?? [];
+    (await request(jar, `${config.proxyHost}/delegate/score/days/listScoreProgress?sence=score&deviceType=1`)).data?.data
+      ?.taskProgress;
+  if (total == null || today == null || !Number.isFinite(+total) || !Number.isFinite(+today) || !Array.isArray(progress)) {
+    throw new Error('积分接口未返回有效数据，请检查登录状态');
+  }
   const tasks = {};
   for (const p of progress) {
     for (const code of p.taskCode || []) {
