@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { config } from '../config.js';
+// 缺口解码器放在 platform 里（产品侧单一实现），这里是运行时复用
+import { solveAndDrag } from '../../../platform/src/domain/captcha/aliyun.js';
 
 let browser = null;
 // 滑块风控把「有 CDP 调试口」当成 devtools 入侵，Chromium 里怎么拟人都过不去；
@@ -176,6 +178,21 @@ export async function clearCaptcha(page) {
       await sleep(800);
       if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
       continue;
+    }
+
+    // ① 先自动解码缺口：拿拼图块与背景做像素匹配，算出真实距离（而不是拖到轨道末端）
+    const solved = await solveAndDrag(page, {
+      log: (m) => console.log('[captcha-solve]', JSON.stringify(m)),
+    }).catch((e) => ({ ok: false, reason: e.message }));
+    if (solved.ok) {
+      await sleep(1500);
+      if (!(await page.locator(CAPTCHA_DIALOG).count())) {
+        console.log('[captcha] 缺口解码 + 自动拖动通过（offset=%s）', solved.offset);
+        return true;
+      }
+      console.log('[captcha] 解码结果 offset=%s 未被接受，继续用兜底策略', solved.offset);
+    } else {
+      console.log('[captcha] 自动解码未成功：%s', solved.reason || '未知');
     }
 
     const { box } = slider;

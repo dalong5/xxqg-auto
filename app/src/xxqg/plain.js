@@ -335,9 +335,59 @@ export async function submit() {
   await sleep(2500);
   const s = await rects();
   if (!s.slider || !s.track) return { ok: false, why: '没有出现滑块', state: s };
+
+  // 先尝试自动解码缺口：算出真实距离，再让 OS 鼠标拖过去
+  const solved = await solveSlider().catch((e) => ({ ok: false, reason: e.message }));
+  if (solved.ok) {
+    const from = s.slider;
+    const to = [Math.round(from[0] + solved.distance), from[1]];
+    await drag(from[0], from[1], to[0], to[1], 34);
+    await sleep(4000);
+    return { ok: true, solved: { offset: solved.offset, distance: solved.distance } };
+  }
+  console.log('[plain] 缺口解码未成功：', solved.reason || '未知', '→ 兜底拖到轨道末端');
   await drag(s.slider[0], s.slider[1], s.track[0], s.track[1], 34);
   await sleep(4000);
   return { ok: true };
+}
+
+/**
+ * 在普通 Chrome 里解滑块：页面内只负责「报出两张图的 URL 与显示宽度」，
+ * 下载与像素计算放在 Node（避开 canvas 跨域 taint）。
+ */
+const LOCATE_CAPTCHA_JS =
+  "(function(){var root=document.querySelector('#JS_aliyun-captcha-dialog')||document.querySelector('#aliyunCaptcha-sliding-body')||document.body;var out=[];root.querySelectorAll('*').forEach(function(el){var r=el.getBoundingClientRect();if(r.width<10||r.height<10)return;var cs=getComputedStyle(el);var m=/url\\([\"']?(.+?)[\"']?\\)/.exec(cs.backgroundImage||'');var url=m?m[1]:'';if(!url&&el.tagName==='IMG')url=el.currentSrc||el.src;if(!url)return;out.push({cls:String(el.className||''),id:el.id||'',tag:el.tagName,url:url,w:Math.round(r.width),h:Math.round(r.height)})});document.title='LOC:'+JSON.stringify(out)})()";
+
+export async function solveSlider() {
+  const { findGapOffset, toCssDistance } = await import('../../../platform/src/domain/captcha/solver.js');
+  const raw = await probe(LOCATE_CAPTCHA_JS);
+  const m = raw.match(/LOC:(\[.*\])/);
+  if (!m) return { ok: false, reason: '读不到验证码图片列表' };
+  let list;
+  try {
+    list = JSON.parse(m[1]);
+  } catch {
+    return { ok: false, reason: '图片列表解析失败' };
+  }
+  if (list.length < 2) return { ok: false, reason: `只找到 ${list.length} 张候选图` };
+
+  const piece = [...list].sort((a, b) => (/puzzle|block|piece/i.test(a.cls + a.id) ? -1 : 0) - (/puzzle|block|piece/i.test(b.cls + b.id) ? -1 : 0))[0];
+  const bg = [...list].filter((e) => e !== piece).sort((a, b) => b.w * b.h - a.w * a.h)[0];
+  if (!piece || !bg) return { ok: false, reason: '分不清背景图与拼图块' };
+
+  const load = async (url) => {
+    const res = await fetch(url, { headers: { referer: 'https://pc.xuexi.cn/' } });
+    if (!res.ok) throw new Error(`图片下载失败 ${res.status}`);
+    const { PNG } = await import('pngjs');
+    const buf = Buffer.from(await res.arrayBuffer());
+    const png = PNG.sync.read(buf);
+    return { width: png.width, height: png.height, data: new Uint8Array(png.data) };
+  };
+  const [bgImg, pieceImg] = await Promise.all([load(bg.url), load(piece.url)]);
+  const solved = findGapOffset(bgImg.data, bgImg.width, bgImg.height, pieceImg.data, pieceImg.width, pieceImg.height);
+  const distance = Math.round(toCssDistance(solved.offset, bgImg.width, bg.w));
+  if (!(distance > 5)) return { ok: false, reason: `距离异常 ${distance}` };
+  return { ok: true, offset: solved.offset, distance, score: solved.score };
 }
 
 /**
