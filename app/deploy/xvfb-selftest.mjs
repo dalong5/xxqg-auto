@@ -71,11 +71,15 @@ async function main() {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const url = `http://127.0.0.1:${server.address().port}/`;
 
-  const browser = await chromium.launch({
-    channel: process.platform === 'win32' ? 'chrome' : undefined,
+  const launchOpts = {
     headless: false,
     args: ['--no-sandbox', '--window-position=0,0', '--window-size=1000,700'],
-  });
+  };
+  // 容器里用的是系统 chromium（CHROME_PATH），不是 Playwright 自带的浏览器
+  if (process.env.CHROME_PATH) launchOpts.executablePath = process.env.CHROME_PATH;
+  else if (process.platform === 'win32') launchOpts.channel = 'chrome';
+
+  const browser = await chromium.launch(launchOpts);
   const ctx = await browser.newContext({ viewport: null });
   const page = await ctx.newPage();
   await page.goto(url);

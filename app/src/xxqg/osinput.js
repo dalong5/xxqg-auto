@@ -55,19 +55,20 @@ export function dragWin32(x1, y1, x2, y2, steps = 34) {
 /** Linux：xdotool 链式命令，一次进程内完成按下→分段移动→松开 */
 export function dragX11(x1, y1, x2, y2, steps = 30) {
   const display = process.env.DISPLAY || ':99';
-  const parts = ['mousemove --sync', String(x1), String(y1), 'sleep 0.12', 'mousedown 1', 'sleep 0.06'];
+  // 不用 --sync：Xvfb 没有真实指针设备，--sync 可能一直等“指针稳定”而超时
+  const args = ['mousemove', String(x1), String(y1), 'sleep', '0.12', 'mousedown', '1', 'sleep', '0.06'];
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     const eased = 1 - Math.pow(1 - t, 3); // 先快后慢
-    parts.push('mousemove --sync', String(Math.round(x1 + (x2 - x1) * eased)), String(Math.round(y1)), 'sleep 0.02');
+    args.push('mousemove', String(Math.round(x1 + (x2 - x1) * eased)), String(Math.round(y1)), 'sleep', '0.02');
   }
-  parts.push('mousemove --sync', String(x2), String(y2), 'sleep 0.08', 'mouseup 1');
+  args.push('mousemove', String(x2), String(y2), 'sleep', '0.08', 'mouseup', '1');
   return new Promise((res, rej) => {
     execFile(
       'xdotool',
-      parts,
+      args,
       { env: { ...process.env, DISPLAY: display }, timeout: 40_000 },
-      (e, out, err) => (e ? rej(new Error(`xdotool: ${(err || e.message).trim().slice(0, 200)}`)) : res(out)),
+      (e, out, err) => (e ? rej(new Error(`xdotool: ${(err || e.message).trim().slice(0, 400)}`)) : res(out)),
     );
   });
 }

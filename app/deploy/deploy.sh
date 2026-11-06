@@ -17,7 +17,7 @@ log() { printf '\n== %s ==\n' "$*"; }
 log "0. 预检"
 command -v docker >/dev/null || { echo "docker 不存在"; exit 2; }
 [ -d "$APP_DIR" ] || { echo "找不到 $APP_DIR"; exit 2; }
-[ -d "$REL_DIR/src" ] || { echo "找不到 $REL_DIR/src（解包目录不对？）"; exit 2; }
+[ -d "$REL_DIR/app" ] || { echo "找不到 $REL_DIR/app（解包目录不对？）"; exit 2; }
 docker volume inspect "$DATA_VOL" >/dev/null || { echo "数据卷 $DATA_VOL 不存在"; exit 2; }
 
 log "1. 备份数据库与密钥（卷内 backups/）"
@@ -35,7 +35,9 @@ done
 
 log "3. 替换源码（保留 compose/data/.env）"
 tar czf "/opt/xxqg-auto/releases/${VER}/previous-source.tar.gz" -C "$APP_DIR" --exclude=data --exclude=node_modules . || true
-rsync -a --delete --exclude data --exclude node_modules --exclude .env "$REL_DIR/src/" "$APP_DIR/"
+rsync -a --delete --exclude data --exclude node_modules --exclude .env \
+  --exclude compose.instance.yml --exclude compose.xvfb.yml \
+  "$REL_DIR/app/" "$APP_DIR/"
 
 log "4. 重建并滚动重启"
 cd "$APP_DIR"
