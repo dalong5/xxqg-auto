@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { config } from '../config.js';
 import * as db from '../db.js';
 // 缺口自动解码器（产品侧单一实现），失败时仍回落到下面的人工验证通道
@@ -134,12 +135,51 @@ export async function sleep(ms, checkPause) {
 export const jitter = (base, spread = 4000) => base + Math.floor(Math.random() * spread);
 
 const CAPTCHA_DIALOG = '#JS_aliyun-captcha-dialog.show';
+const SLIDER_HANDLE = '#aliyunCaptcha-sliding-slider, .aliyunCaptcha-sliding-slider, #nc_1_n1z';
+
+/**
+ * 用「真实 OS 鼠标」把滑块拖过去（SendInput）。
+ * CDP 合成事件会被风控判定为自动化，而 2x 屏 + 真实输入是历史上唯一通过过的组合。
+ * 依赖 app/scripts/native.ps1，且只有 Windows 有桌面会话时可用。
+ */
+async function osDragSlider(page, distanceCss) {
+  if (process.platform !== 'win32') return false;
+  const geo = await page
+    .evaluate(() => ({
+      sx: window.screenX,
+      sy: window.screenY,
+      ow: window.outerWidth,
+      oh: window.outerHeight,
+      iw: window.innerWidth,
+      ih: window.innerHeight,
+      d: window.devicePixelRatio,
+    }))
+    .catch(() => null);
+  const handle = await page.locator(SLIDER_HANDLE).first().boundingBox().catch(() => null);
+  if (!geo || !handle) return false;
+
+  const oy = geo.sy * 2 + geo.oh * 2 - geo.ih * geo.d;
+  const ox = geo.sx * 2 + (geo.ow * 2 - geo.iw * geo.d) / 2;
+  const x1 = Math.round(ox + (handle.x + handle.width / 2) * geo.d);
+  const y1 = Math.round(oy + (handle.y + handle.height / 2) * geo.d);
+  const x2 = Math.round(x1 + distanceCss * geo.d);
+  await new Promise((res, rej) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/native.ps1', '-Action', 'drag', '-A1', String(x1), '-A2', String(y1), '-A3', String(x2), '-A4', String(y1), '-A5', '34'],
+      { cwd: process.cwd(), timeout: 40_000 },
+      (e, out, err) => (e ? rej(new Error((err || e.message).trim())) : res(out)),
+    );
+  });
+  return true;
+}
 
 /**
  * 验证码处置顺序：
- *   1) 先尝试「缺口自动解码 + 人类化拖动」（平台侧 captcha/solver，纯像素求解）；
- *   2) 自动通过不了就回到人工验证：把画面推给网站，转发用户真实输入。
- * 自动解码只解决「拖到哪儿」，不改变风控判定；失败不重试、直接交给人工，避免抬高风险分。
+ *   1) 缺口自动解码 + CDP 合成拖动（快，先试）；
+ *   2) 解码出的距离再用「真实 OS 鼠标」拖一次（风控对输入来源敏感）；
+ *   3) 仍不通过 → 回到人工验证：把画面推给网站，转发用户真实输入。
+ * 自动解码只解决「拖到哪儿」；失败不无限重试，避免抬高账号风险分。
  */
 export async function clearCaptcha(page) {
   if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
@@ -147,13 +187,28 @@ export async function clearCaptcha(page) {
   const solved = await solveAndDrag(page, {
     log: (m) => console.log('[captcha-solve]', JSON.stringify(m)),
   }).catch((e) => ({ ok: false, reason: e.message }));
+
   if (solved.ok) {
     await sleep(1500);
     if (!(await page.locator(CAPTCHA_DIALOG).count())) {
       console.log('[captcha] 缺口解码通过（offset=%s，距离=%s）', solved.offset, Math.round(solved.distance));
       return true;
     }
-    console.log('[captcha] 解码拖动未被接受（offset=%s），转人工验证', solved.offset);
+    console.log('[captcha] 合成拖动未被接受（offset=%s），改用真实鼠标重拖', solved.offset);
+
+    // 第二击：同一条距离，换成操作系统输入栈的鼠标
+    const os = await osDragSlider(page, solved.distance).catch((e) => {
+      console.log('[captcha] OS 拖动不可用：%s', e.message);
+      return false;
+    });
+    if (os) {
+      await sleep(2000);
+      if (!(await page.locator(CAPTCHA_DIALOG).count())) {
+        console.log('[captcha] 真实鼠标拖动通过（距离=%s）', Math.round(solved.distance));
+        return true;
+      }
+      console.log('[captcha] 真实鼠标拖动仍未被接受，转人工验证');
+    }
   } else {
     console.log('[captcha] 自动解码未成功：%s，转人工验证', solved.reason || '未知');
   }
