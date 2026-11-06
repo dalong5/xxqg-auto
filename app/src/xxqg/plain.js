@@ -359,7 +359,7 @@ const LOCATE_CAPTCHA_JS =
   "(function(){var root=document.querySelector('#JS_aliyun-captcha-dialog')||document.querySelector('#aliyunCaptcha-sliding-body')||document.body;var out=[];root.querySelectorAll('*').forEach(function(el){var r=el.getBoundingClientRect();if(r.width<10||r.height<10)return;var cs=getComputedStyle(el);var m=/url\\([\"']?(.+?)[\"']?\\)/.exec(cs.backgroundImage||'');var url=m?m[1]:'';if(!url&&el.tagName==='IMG')url=el.currentSrc||el.src;if(!url)return;out.push({cls:String(el.className||''),id:el.id||'',tag:el.tagName,url:url,w:Math.round(r.width),h:Math.round(r.height)})});document.title='LOC:'+JSON.stringify(out)})()";
 
 export async function solveSlider() {
-  const { findGapOffset, toCssDistance } = await import('../../../platform/src/domain/captcha/solver.js');
+  const { findGapOffset, toCssDistance } = await import('./captcha/solver.js');
   const raw = await probe(LOCATE_CAPTCHA_JS);
   const m = raw.match(/LOC:(\[.*\])/);
   if (!m) return { ok: false, reason: '读不到验证码图片列表' };

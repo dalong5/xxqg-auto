@@ -4,8 +4,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { config } from '../config.js';
 import * as db from '../db.js';
-// 缺口自动解码器（产品侧单一实现），失败时仍回落到下面的人工验证通道
-import { solveAndDrag } from '../../../platform/src/domain/captcha/aliyun.js';
+// 缺口自动解码器（app 内自带一份，容器构建上下文只包含 app/，不能引用仓库外路径）
+import { solveAndDrag } from './captcha/aliyun.js';
 
 const pageJobs = new WeakMap();
 
@@ -196,6 +196,11 @@ async function osDragSlider(page, distanceCss) {
 export async function clearCaptcha(page) {
   if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
 
+  // 没有任务上下文就没有人工验证通道，也没有日志归属：直接报错，别做无主拖拽
+  const job = pageJobs.get(page);
+  if (!job) throw new Error('需要人工验证，请从网站发起任务');
+  if (job.verificationError) throw job.verificationError;
+
   const solved = await solveAndDrag(page, {
     log: (m) => console.log('[captcha-solve]', JSON.stringify(m)),
   }).catch((e) => ({ ok: false, reason: e.message }));
@@ -225,9 +230,7 @@ export async function clearCaptcha(page) {
     console.log('[captcha] 自动解码未成功：%s，转人工验证', solved.reason || '未知');
   }
 
-  const job = pageJobs.get(page);
-  if (!job) throw new Error('需要人工验证，请从网站发起任务');
-  if (job.verificationError) throw job.verificationError;
+  // 落到这里说明自动方案没成：把画面推给用户，转发真实输入
   db.db.prepare('DELETE FROM verification_actions WHERE job_id = ?').run(job.jobId);
   const deadline = Date.now() + 5 * 60_000;
   let lastFrame = 0;
