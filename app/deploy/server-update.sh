@@ -22,7 +22,11 @@ docker compose version >/dev/null || { echo "compose 不可用"; exit 2; }
 [ -d "$SRC_DIR" ] || { echo "找不到 $SRC_DIR"; exit 2; }
 
 log "1. Xvfb 自检（临时容器，不碰正式服务与账号）"
+# 注意：自检必须用「本次发布包」的源码，而不是镜像里可能还是旧的源码。
+# 用 bind mount 把发布包的 src/deploy 盖到 /app 上，node_modules 仍用镜像里的。
 if docker compose "${COMPOSE[@]}" --project-name xxqg-selftest run --rm --no-deps \
+      -v "$SRC_DIR/src:/app/src:ro" \
+      -v "$SRC_DIR/deploy:/app/deploy:ro" \
       --entrypoint bash worker /app/deploy/xvfb-selftest.sh; then
   echo "自检 PASS：Xvfb + xdotool 能把滑块拖到终点"
   XVFB_OK=1
