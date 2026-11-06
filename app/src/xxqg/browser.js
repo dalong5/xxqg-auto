@@ -6,6 +6,8 @@ import { config } from '../config.js';
 import * as db from '../db.js';
 // 缺口自动解码器（app 内自带一份，容器构建上下文只包含 app/，不能引用仓库外路径）
 import { solveAndDrag } from './captcha/aliyun.js';
+// OS 级鼠标输入：Windows=SendInput，Linux/Xvfb=xdotool(XTest)
+import { osInputAvailable, dragSliderBy } from './osinput.js';
 
 const pageJobs = new WeakMap();
 
@@ -147,42 +149,18 @@ const CAPTCHA_DIALOG = '#JS_aliyun-captcha-dialog.show';
 const SLIDER_HANDLE = '#aliyunCaptcha-sliding-slider, .aliyunCaptcha-sliding-slider, #nc_1_n1z';
 
 /**
- * 用「真实 OS 鼠标」把滑块拖过去（SendInput）。
- * CDP 合成事件会被风控判定为自动化，而 2x 屏 + 真实输入是历史上唯一通过过的组合。
- * 依赖 app/scripts/native.ps1，且只有 Windows 有桌面会话时可用。
+ * 用「真实 OS 鼠标」把滑块拖过去：Windows 走 SendInput，Linux 走 xdotool(XTest)。
+ * 无桌面（容器没起 Xvfb / 没有 DISPLAY）时返回 false，调用方继续走人工验证。
  */
 async function osDragSlider(page, distanceCss) {
-  if (process.platform !== 'win32') return false;
-  const geo = await page
-    .evaluate(() => ({
-      sx: window.screenX,
-      sy: window.screenY,
-      ow: window.outerWidth,
-      oh: window.outerHeight,
-      iw: window.innerWidth,
-      ih: window.innerHeight,
-      d: window.devicePixelRatio,
-    }))
-    .catch(() => null);
+  if (!osInputAvailable()) {
+    console.log('[captcha] 无 OS 输入通道（win32 或 linux+DISPLAY 才可用），跳过真实鼠标');
+    return false;
+  }
   const handle = await page.locator(SLIDER_HANDLE).first().boundingBox().catch(() => null);
-  if (!geo || !handle) return false;
-
-  // 屏幕缩放：window.screenX/screenY 是 CSS 像素，SendInput 要物理像素
-  const scale = geo.d >= 1.5 ? 2 : 1;
-  const oy = geo.sy * scale + geo.oh * scale - geo.ih * geo.d;
-  const ox = geo.sx * scale + (geo.ow * scale - geo.iw * geo.d) / 2;
-  const x1 = Math.round(ox + (handle.x + handle.width / 2) * geo.d);
-  const y1 = Math.round(oy + (handle.y + handle.height / 2) * geo.d);
-  const x2 = Math.round(x1 + distanceCss * geo.d);
-  console.log('[captcha] OS 拖动坐标 geo=%j handle=%j -> (%d,%d) → (%d,%d)', geo, handle, x1, y1, x2, y1);
-  await new Promise((res, rej) => {
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/native.ps1', '-Action', 'drag', '-A1', String(x1), '-A2', String(y1), '-A3', String(x2), '-A4', String(y1), '-A5', '34'],
-      { cwd: process.cwd(), timeout: 40_000 },
-      (e, out, err) => (e ? rej(new Error((err || e.message).trim())) : res(out)),
-    );
-  });
+  if (!handle) return false;
+  const { from, to, geo } = await dragSliderBy(page, handle, distanceCss);
+  console.log('[captcha] OS 拖动 geo=%j handle=%j -> (%d,%d) → (%d,%d)', geo, handle, from.x, from.y, to.x, to.y);
   return true;
 }
 
