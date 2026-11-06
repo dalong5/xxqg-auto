@@ -222,7 +222,7 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
 
       if (shouldStop?.()) throw new Error('任务执行时间已到，停止答题');
       if (kind === 'daily') {
-        const seconds = 20 + Math.floor(Math.random() * 41);
+        const seconds = 3 + Math.floor(Math.random() * 8);
         log(`阅读本题，等待 ${seconds} 秒后作答`);
         await sleep(seconds * 1000, shouldStop);
         if (shouldStop?.()) throw new Error('任务执行时间已到，停止答题');

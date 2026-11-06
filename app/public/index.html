@@ -74,11 +74,9 @@
     <div class="actions" id="accountActions">
       <button class="primary" id="btnLogin">生成登录二维码</button>
       <button id="btnSync">查当前积分</button>
-      <button class="primary" id="btnPause" disabled>暂停任务</button>
-      <button id="btnResume" disabled>继续任务</button>
       <button id="btnDel" hidden>解绑账号</button>
     </div>
-    <p class="hint" id="taskStatus" role="status" aria-live="polite">请先扫码登录，开始任务后可在这里暂停。</p>
+    <p class="hint" id="taskStatus" role="status" aria-live="polite">请先扫码登录后开始任务。</p>
   </section>
 
   <div class="grid">
@@ -183,9 +181,7 @@ function renderAccount() {
   if (snapshot === renderedAccount) return;
   renderedAccount = snapshot;
   const status = user?.active_job_status;
-  $('btnPause').disabled = !user?.active_job || !['queued', 'running'].includes(status);
-  $('btnResume').disabled = !user?.active_job || status !== 'paused';
-  $('taskStatus').textContent = !user ? '请先扫码登录，开始任务后可在这里暂停。' : status === 'pausing' ? '正在暂停，等待当前页面操作结束…' : status === 'paused' ? '任务已暂停。继续时回查官方进度，已获得积分保留；未完成的一题或材料可能重新进入。' : status === 'queued' ? '任务正在排队，可点击“暂停任务”暂停排队。' : status === 'running' ? '当前账号正在执行任务，可点击“暂停任务”。' : '当前账号暂无任务，开始任务后可在这里暂停。';
+  $('taskStatus').textContent = !user ? '请先扫码登录后开始任务。' : status === 'pausing' ? '正在暂停，等待当前页面操作结束…' : status === 'paused' ? '任务已暂停，点击下方任务按钮继续原任务。已获得积分保留；未完成的一题或材料可能重新进入。' : status === 'queued' ? '任务正在排队。' : status === 'running' ? '当前账号正在执行任务。' : '当前账号暂无任务，可点击下方按钮开始任务。';
   const select = $('accountSelect');
   select.replaceChildren();
   for (const account of accounts) {
@@ -273,7 +269,7 @@ function followJob(jobId, uid = user?.uid || '') {
   es.addEventListener('end', e => {
     if (stream !== es || (uid && user?.uid !== uid)) return;
     const result = JSON.parse(e.data);
-    log(result.status === 'paused' ? '任务已暂停，可点击继续任务' : result.status === 'done' ? '任务已完成' : `任务未完成：${result.error || '执行中断，请查看前面的提示'}`, result.status === 'done' ? 'ok' : result.status === 'paused' ? 'step' : 'bad');
+    log(result.status === 'paused' ? '任务已暂停，点击下方任务按钮继续原任务' : result.status === 'done' ? '任务已完成' : `任务未完成：${result.error || '执行中断，请查看前面的提示'}`, result.status === 'done' ? 'ok' : result.status === 'paused' ? 'step' : 'bad');
     stopFollowing();
     load().catch(e => log(e.message, 'bad'));
   });
@@ -291,7 +287,7 @@ async function run(tasks) {
     user.active_job = d.jobId;
     user.active_job_status = d.status || 'queued';
     renderAccount();
-    if (d.status === 'paused') return log('当前任务已暂停，请点击继续任务', 'step');
+    if (d.status === 'paused') return await resumeTask(uid, d.jobId);
     log(`已入队：${tasks.map(task => taskNames[task] || '学习任务').join(' / ')}（队列 ${d.queued}）`, 'step');
     followJob(d.jobId);
   } catch (e) { log(e.message, 'bad'); }
@@ -306,7 +302,7 @@ async function refresh() {
     user.active_job = d.jobId;
     user.active_job_status = d.status || 'queued';
     renderAccount();
-    if (d.status === 'paused') return log('当前任务已暂停，请点击继续任务', 'step');
+    if (d.status === 'paused') return log('当前任务已暂停，点击下方任务按钮继续原任务', 'step');
     followJob(d.jobId);
   } catch (e) { log(e.message, 'bad'); }
 }
@@ -357,27 +353,18 @@ $('btnArticle').onclick = () => run(['article']);
 $('btnVideo').onclick = () => run(['video']);
 $('btnQuiz').onclick = () => run(['daily']);
 $('btnSync').onclick = refresh;
-async function controlTask(action) {
-  if (!user?.active_job) return;
-  const uid = user.uid;
-  const jobId = user.active_job;
-  const button = $(action === 'pause' ? 'btnPause' : 'btnResume');
-  button.disabled = true;
-  try {
-    const result = await api(`/api/jobs/${encodeURIComponent(jobId)}/${action}`, { method: 'POST' });
-    if (user?.uid !== uid || user.active_job !== jobId) return;
-    user.active_job_status = result.status;
-    renderAccount();
-    if (result.status !== 'paused') followJob(jobId);
-    else stopFollowing();
-  } catch (e) { if (user?.uid === uid) log(e.message, 'bad'); }
-  finally { button.disabled = false; renderedAccount = null; await load().catch(e => log(e.message, 'bad')); }
+async function resumeTask(uid, jobId) {
+  const result = await api(`/api/jobs/${encodeURIComponent(jobId)}/resume`, { method: 'POST' });
+  if (user?.uid !== uid || user.active_job !== jobId) return;
+  user.active_job_status = result.status;
+  renderAccount();
+  log('已继续原任务，等待执行器回查官方进度', 'step');
+  followJob(jobId);
+  await load();
 }
-$('btnPause').onclick = () => controlTask('pause');
-$('btnResume').onclick = () => controlTask('resume');
 $('btnClear').onclick = () => ($('log').innerHTML = '');
 $('btnSelf').onclick = async () => {
-  if (user?.active_job_status === 'paused') return log('当前任务已暂停，请点击继续任务', 'step');
+  if (user?.active_job_status === 'paused') return log('当前任务已暂停，点击下方任务按钮继续原任务', 'step');
   if (user?.active_job) { followJob(user.active_job); log('已接回当前答题任务，请先完成安全验证', 'step'); return; }
   const d = await api('/api/selftest', { method: 'POST' });
   log('开始浏览器自检（不需要账号）', 'step');

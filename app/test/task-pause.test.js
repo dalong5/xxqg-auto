@@ -40,7 +40,7 @@ mock.module('../src/xxqg/tasks.js', { exports: {
 const worker = await import('../src/worker.js');
 const { default: app } = await import('../src/app.js');
 
-test('pause and resume work through the UI without crossing accounts or overlapping execution', { timeout: 45000 }, async () => {
+test('paused tasks resume through existing task actions without crossing accounts or overlapping execution', { timeout: 45000 }, async () => {
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -58,7 +58,7 @@ test('pause and resume work through the UI without crossing accounts or overlapp
     page.setDefaultTimeout(5000);
     await page.addInitScript(() => sessionStorage.setItem('selectedUser', 'a'));
     await page.goto(base);
-    await page.getByRole('button', { name: '暂停任务', exact: true }).click();
+    assert.equal((await context.request.post(`${base}/api/jobs/${jobs.a}/pause`)).status(), 200);
     await until(() => db.getJob(jobs.a).status === 'paused');
     assert.equal(db.getJob(jobs.a).attempts, 0);
     assert.equal(db.enqueue({ kind: 'run', uid: 'a', visitorId: owner }), jobs.a);
@@ -67,19 +67,18 @@ test('pause and resume work through the UI without crossing accounts or overlapp
     for (const action of ['pause', 'resume']) assert.equal((await outsider.request.post(`${base}/api/jobs/${jobs.a}/${action}`)).status(), 404);
     await outsider.close();
     await page.reload();
-    assert.equal(await page.getByRole('button', { name: '暂停任务', exact: true }).isVisible(), true, 'pause stays visible after the task is paused');
-    assert.equal(await page.getByRole('button', { name: '暂停任务', exact: true }).isDisabled(), true);
-    await page.getByRole('button', { name: '继续任务', exact: true }).click();
+    assert.equal(await page.locator('#btnPause, #btnResume').count(), 0, 'dedicated pause/resume buttons are removed');
+    await page.getByRole('button', { name: '只阅读', exact: true }).click();
     await until(() => db.getJob(jobs.a).status === 'queued');
     await worker.startWorker();
     await until(() => cycles.size === 2);
-    await page.getByRole('button', { name: '暂停任务', exact: true }).click();
+    assert.equal((await context.request.post(`${base}/api/jobs/${jobs.a}/pause`)).status(), 200);
     await until(() => db.getJob(jobs.a).status === 'pausing');
     assert.equal((await context.request.post(`${base}/api/jobs/${jobs.a}/resume`)).status(), 409);
     await until(() => db.getJob(jobs.a).status === 'paused');
     assert.ok(closed.has('a-1'), 'the browser context must close before pause is acknowledged');
     assert.equal(db.getJob(jobs.b).status, 'running');
-    await page.getByRole('button', { name: '继续任务', exact: true }).click();
+    await page.getByRole('button', { name: '只阅读', exact: true }).click();
     await until(() => cycles.get('a') === 2);
     assert.equal(db.getJob(jobs.a).status, 'running');
     release.add('a'); release.add('b');
@@ -100,7 +99,7 @@ test('pause and resume work through the UI without crossing accounts or overlapp
   }
 });
 
-test('task controls remain visible immediately after score lookup in the account actions', async () => {
+test('pause and resume controls are absent on narrow and desktop homepages', async () => {
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   let browser;
@@ -111,14 +110,10 @@ test('task controls remain visible immediately after score lookup in the account
       const page = await context.newPage();
       await page.goto(`http://127.0.0.1:${server.address().port}`);
       await page.waitForFunction(() => document.querySelector('#accountHint').textContent.includes('已绑定'));
-      for (const id of ['btnPause', 'btnResume']) {
-        const button = page.locator(`#${id}`);
-        assert.equal(await button.isVisible(), true);
-        assert.equal(await button.isDisabled(), true, 'without an account, controls are visible but disabled');
-        const bounds = await button.boundingBox();
-        assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width, 'controls must not overflow narrow screens');
-      }
-      assert.deepEqual(await page.locator('#btnPause').evaluate(el => [el.parentElement.id, el.previousElementSibling.id, el.nextElementSibling.id]), ['accountActions', 'btnSync', 'btnResume']);
+      assert.equal(await page.locator('#btnPause, #btnResume').count(), 0);
+      assert.equal(await page.getByRole('button', { name: '暂停任务', exact: true }).count(), 0);
+      assert.equal(await page.getByRole('button', { name: '继续任务', exact: true }).count(), 0);
+      assert.equal(await page.getByRole('button', { name: '查当前积分', exact: true }).isVisible(), true);
       assert.match(await page.locator('#taskStatus').innerText(), /扫码登录/);
       await context.close();
     }
