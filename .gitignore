@@ -17,3 +17,6 @@ uitest.mjs
 !app/research/**
 logs/
 dist/
+.tmp-*
+.tmp-server/
+.tmp-*

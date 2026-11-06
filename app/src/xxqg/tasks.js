@@ -222,7 +222,12 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
 
       if (shouldStop?.()) throw new Error('任务执行时间已到，停止答题');
       if (kind === 'daily') {
-        const seconds = 20 + Math.floor(Math.random() * 41);
+        // 每题等待：默认 20–60 秒（防封号优先于快，仓库测试也按这个区间断言）；
+        // 想更快可设 DAILY_WAIT_MIN/DAILY_WAIT_MAX，例如 3/10。
+        const waitMin = Number(process.env.DAILY_WAIT_MIN ?? 20);
+        const waitMax = Number(process.env.DAILY_WAIT_MAX ?? 60);
+        const span = Math.max(0, waitMax - waitMin);
+        const seconds = waitMin + Math.floor(Math.random() * (span + 1));
         log(`阅读本题，等待 ${seconds} 秒后作答`);
         await sleep(seconds * 1000, shouldStop);
         if (shouldStop?.()) throw new Error('任务执行时间已到，停止答题');
