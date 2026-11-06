@@ -236,6 +236,24 @@ let loginRunning = 0;
 let stopping = false;
 
 /**
+ * 空闲释放浏览器：一个 Chromium 常驻约 150–250MB，而任务是一阵一阵来的。
+ * 空闲超过 BROWSER_IDLE_CLOSE_MS 就关掉，下一个任务来了再懒启动。
+ */
+const IDLE_CLOSE_MS = Number(process.env.BROWSER_IDLE_CLOSE_MS ?? 120_000);
+let lastJobAt = Date.now();
+let browserClosed = false;
+
+async function closeIfIdle() {
+  if (browserClosed) return;
+  if (taskRunning > 0 || loginRunning > 0) return;
+  if (Date.now() - lastJobAt < IDLE_CLOSE_MS) return;
+  browserClosed = true;
+  await closeBrowser().catch(() => {});
+  console.log(`[mem] 空闲 ${Math.round(IDLE_CLOSE_MS / 1000)}s，已释放浏览器`);
+}
+
+
+/**
  * 内存保护：并发名额可以开得比内存大，但不能把机器拖进 swap 抖动。
  * 已经在跑任务、且可用内存低于阈值时，暂缓领取新任务（不中断已在跑的）。
  * /proc/meminfo 在容器里通常反映宿主机内存，正好是我们想保护的量。
@@ -278,9 +296,12 @@ async function taskLoop() {
       if (job) break;
     }
     if (!job) {
+      await closeIfIdle();
       await pause(700);
       continue;
     }
+    lastJobAt = Date.now();
+    browserClosed = false;
     taskRunning++;
     runTaskJob(job)
       .catch((e) => console.error('job crash', e))
@@ -296,9 +317,12 @@ async function loginLoop() {
     }
     const row = claimLogin();
     if (!row) {
+      await closeIfIdle();
       await pause(400);
       continue;
     }
+    lastJobAt = Date.now();
+    browserClosed = false;
     loginRunning++;
     driveLogin(row.sid)
       .catch((e) => console.error('login crash', e))

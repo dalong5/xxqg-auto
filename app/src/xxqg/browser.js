@@ -22,6 +22,15 @@ const LAUNCH_ARGS = [
   '--disable-dev-shm-usage',
   '--mute-audio',
   '--disable-features=RendererCodeIntegrity,IsolateOrigins,site-per-process',
+  // 省内存：服务器无 GPU，也不需要后台同步/组件更新/多渲染进程
+  '--disable-gpu',
+  '--disable-software-rasterizer',
+  '--disable-background-networking',
+  '--disable-component-update',
+  '--disable-sync',
+  '--disable-extensions',
+  '--renderer-process-limit=2',
+  '--js-flags=--max-old-space-size=192',
 ];
 
 /**

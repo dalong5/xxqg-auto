@@ -1,13 +1,20 @@
 # 同一主机共用 SQLite 和密钥：保留两个小执行器，新增 18 个执行名额。
 # 必须作为最后一个 Compose 文件；启动时不要另传 --scale 覆盖名额。
+# 内存优化：空闲 2 分钟释放浏览器；Node 堆上限；每服务 mem_limit 防止互抢。
 services:
   api:
     environment:
       MAX_ACCOUNTS: 50
+      NODE_OPTIONS: --max-old-space-size=192
+    mem_limit: 300m
   worker:
     environment:
       MAX_ACCOUNTS: 50
       WORKER_CONCURRENCY: 1
+      NODE_OPTIONS: --max-old-space-size=192
+      BROWSER_IDLE_CLOSE_MS: "120000"
+      WORKER_MIN_FREE_MB: "200"
+    mem_limit: 600m
     deploy:
       replicas: 2
   worker-bulk:
@@ -20,6 +27,9 @@ services:
       MAX_ACCOUNTS: 50
       WORKER_CONCURRENCY: 18
       LOGIN_CONCURRENCY: 1
+      NODE_OPTIONS: --max-old-space-size=256
+      BROWSER_IDLE_CLOSE_MS: "120000"
+      WORKER_MIN_FREE_MB: "200"
     deploy:
       replicas: 1
     cpus: 1.0
