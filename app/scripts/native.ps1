@@ -1,4 +1,4 @@
-﻿param([string]$Action, [string]$A1, [string]$A2, [string]$A3, [string]$A4, [string]$A5)
+param([string]$Action, [string]$A1, [string]$A2, [string]$A3, [string]$A4, [string]$A5)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 if (-not ('N' -as [type])) {
@@ -19,9 +19,21 @@ public class N {
 }
 [N]::SetProcessDPIAware() | Out-Null
 # Always resolve the HWND fresh: Chrome windows come and go, stale handles blow up later.
+# Prefer the Playwright-launched Chrome (its command line carries --remote-debugging-pipe),
+# otherwise a user-opened Chrome window would receive the synthetic mouse and the drag lands nowhere.
 function Resolve-Hwnd {
   for ($i = 0; $i -lt 25; $i++) {
+    $autoPids = @()
+    try {
+      $autoPids = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*--remote-debugging-pipe*' } |
+        ForEach-Object { $_.ProcessId })
+    } catch {}
     $list = @(Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+    if ($autoPids.Count -gt 0) {
+      $auto = @($list | Where-Object { $autoPids -contains $_.Id })
+      if ($auto.Count -gt 0) { $list = $auto }
+    }
     if ($list.Count -gt 0) {
       $hit = $list | Where-Object { $_.MainWindowTitle -match 'xuexi|Chrome' } | Select-Object -First 1
       if (-not $hit) { $hit = $list[0] }

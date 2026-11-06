@@ -22,6 +22,14 @@ const LAUNCH_ARGS = [
   '--disable-features=RendererCodeIntegrity,IsolateOrigins,site-per-process',
 ];
 
+/**
+ * 有头模式开关：验证码的真实鼠标兜底必须有一个真实窗口，
+ * headless 下 SendInput 无处可落，风控也只会看到合成事件。
+ * 用 XXQG_HEADED=1 打开；默认仍是 headless（容器/服务器不需要桌面）。
+ */
+const HEADED = /^(1|true|yes)$/i.test(process.env.XXQG_HEADED || '');
+export const isHeaded = () => HEADED;
+
 export async function getBrowser() {
   if (browser?.isConnected()) return browser;
   if (launching) return launching;
@@ -29,8 +37,8 @@ export async function getBrowser() {
     // 本机有 Chrome 用 Chrome，容器里用 CHROME_PATH 指向 chromium
     channel: config.chromePath ? undefined : process.env.CHROME_CHANNEL || 'chrome',
     executablePath: config.chromePath || undefined,
-    headless: true,
-    args: LAUNCH_ARGS,
+    headless: !HEADED,
+    args: HEADED ? [...LAUNCH_ARGS, '--window-position=0,0', '--window-size=1280,900'] : LAUNCH_ARGS,
   }).then(instance => {
     browser = instance;
     instance.on('disconnected', () => {
@@ -99,8 +107,9 @@ export async function newSession(jar, { uid, jobId, shouldStop } = {}) {
   const ctx = await b.newContext({
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai',
-    viewport: { width: 1440 + Math.floor(Math.random() * 60), height: 900 },
-    deviceScaleFactor: 1,
+    // 有头模式下不锁 viewport：让页面尺寸跟真实窗口一致，SendInput 的坐标换算才对得上
+    viewport: HEADED ? null : { width: 1440 + Math.floor(Math.random() * 60), height: 900 },
+    deviceScaleFactor: HEADED ? undefined : 1,
     extraHTTPHeaders: { 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' },
     storageState: state,
   });
@@ -158,11 +167,14 @@ async function osDragSlider(page, distanceCss) {
   const handle = await page.locator(SLIDER_HANDLE).first().boundingBox().catch(() => null);
   if (!geo || !handle) return false;
 
-  const oy = geo.sy * 2 + geo.oh * 2 - geo.ih * geo.d;
-  const ox = geo.sx * 2 + (geo.ow * 2 - geo.iw * geo.d) / 2;
+  // 屏幕缩放：window.screenX/screenY 是 CSS 像素，SendInput 要物理像素
+  const scale = geo.d >= 1.5 ? 2 : 1;
+  const oy = geo.sy * scale + geo.oh * scale - geo.ih * geo.d;
+  const ox = geo.sx * scale + (geo.ow * scale - geo.iw * geo.d) / 2;
   const x1 = Math.round(ox + (handle.x + handle.width / 2) * geo.d);
   const y1 = Math.round(oy + (handle.y + handle.height / 2) * geo.d);
   const x2 = Math.round(x1 + distanceCss * geo.d);
+  console.log('[captcha] OS 拖动坐标 geo=%j handle=%j -> (%d,%d) → (%d,%d)', geo, handle, x1, y1, x2, y1);
   await new Promise((res, rej) => {
     execFile(
       'powershell.exe',
@@ -191,10 +203,10 @@ export async function clearCaptcha(page) {
   if (solved.ok) {
     await sleep(1500);
     if (!(await page.locator(CAPTCHA_DIALOG).count())) {
-      console.log('[captcha] 缺口解码通过（offset=%s，距离=%s）', solved.offset, Math.round(solved.distance));
+      console.log('[captcha] 自动通过（kind=%s，距离=%s）', solved.kind, Math.round(solved.distance));
       return true;
     }
-    console.log('[captcha] 合成拖动未被接受（offset=%s），改用真实鼠标重拖', solved.offset);
+    console.log('[captcha] 合成拖动未被接受（kind=%s，距离=%s），改用真实鼠标重拖', solved.kind, Math.round(solved.distance));
 
     // 第二击：同一条距离，换成操作系统输入栈的鼠标
     const os = await osDragSlider(page, solved.distance).catch((e) => {

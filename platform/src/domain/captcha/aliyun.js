@@ -87,14 +87,153 @@ async function decode(page, url) {
 }
 
 /**
- * 求解并拖动。
- * @returns {{ok:boolean, reason?:string, offset?:number, distance?:number, score?:number}}
+ * 判断验证码类型。阿里云这两个皮肤长得像、逻辑完全不同：
+ *  - 'slide-to-end'：提示「请按住滑块，拖动到最右边」——没有缺口，拖到底即可；
+ *  - 'puzzle'      ：有拼图块 + 背景图，需要解出缺口位置。
+ * 判错类型会让求解器对着不存在的缺口算出一堆垃圾距离，所以先分类再解。
+ */
+export async function detectCaptchaKind(page, dialogSelector = '#JS_aliyun-captcha-dialog, #aliyunCaptcha-sliding-body') {
+  return page.evaluate((sel) => {
+    const root = document.querySelector(sel) || document.body;
+    const text = (root.innerText || '').replace(/\s+/g, '');
+    if (/拖动到最右|拖到最右|滑动到最右|最右边/.test(text)) return 'slide-to-end';
+    // 有拼图块元素 → 缺口型
+    const puzzle = root.querySelector(
+      '.aliyunCaptcha-sliding-img-puzzle, #aliyunCaptcha-sliding-puzzle, [class*="puzzle"], [class*="slide-block"]',
+    );
+    if (puzzle) return 'puzzle';
+    // 兜底：文本里明确是缺口
+    if (/拼图|缺口|完成拼图/.test(text)) return 'puzzle';
+    return 'slide-to-end';
+  }, dialogSelector);
+}
+
+/** 取滑块手柄与轨道的盒子（CSS px）。超时设短，避免没有验证码时空等半分钟 */
+async function sliderBoxes(page) {
+  const box = async (sel) => {
+    try {
+      const loc = page.locator(sel).first();
+      if ((await loc.count()) === 0) return null;
+      return await loc.boundingBox({ timeout: 1500 });
+    } catch {
+      return null;
+    }
+  };
+  let handle = await box('#aliyunCaptcha-sliding-slider, .aliyunCaptcha-sliding-slider, #nc_1_n1z');
+  let track = await box('#aliyunCaptcha-sliding-body, .aliyunCaptcha-sliding-body, #nc_1__scale_text, #aliyunCaptcha-sliding-wrapper');
+  if (handle && track) return { handle, track };
+
+  // 兜底：按「可拖动的窄条」在容器里找
+  const found = await findSliderByGeometry(page).catch(() => null);
+  if (found) {
+    handle = handle || found.handle;
+    track = track || found.track;
+  }
+  return { handle, track };
+}
+
+/** 容器内按几何特征找手柄（窄、高、靠左）与轨道（宽、高） */
+async function findSliderByGeometry(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector('#JS_aliyun-captcha-dialog') || document.querySelector('#aliyunCaptcha-sliding-body');
+    if (!root) return null;
+    const nodes = [...root.querySelectorAll('*')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        tag: el.tagName,
+        cls: String(el.className || ''),
+        id: el.id || '',
+        x: r.x,
+        y: r.y,
+        w: r.width,
+        h: r.height,
+        cursor: getComputedStyle(el).cursor,
+      };
+    });
+    const visible = nodes.filter((n) => n.w > 4 && n.h > 4);
+    const handle =
+      visible
+        .filter((n) => n.cursor === 'grab' || n.cursor === 'grab' || /slider|handle|btn/i.test(n.cls + n.id))
+        .sort((a, b) => a.w - b.w)[0] ||
+      visible.filter((n) => n.w >= 24 && n.w <= 64 && n.h >= 24).sort((a, b) => a.x - b.x)[0] ||
+      null;
+    const track = visible.filter((n) => n.w > 150 && n.h >= 24).sort((a, b) => b.w - a.w)[0] || null;
+    if (!handle) return null;
+    return {
+      handle: { x: handle.x, y: handle.y, width: handle.w, height: handle.h },
+      track: track ? { x: track.x, y: track.y, width: track.w, height: track.h } : null,
+    };
+  });
+}
+
+/** 排查用：把验证码容器里的元素清单压成一行日志 */
+export async function dumpCaptchaDom(page, limit = 24) {
+  try {
+    return await page.evaluate((n) => {
+      const root = document.querySelector('#JS_aliyun-captcha-dialog') || document.querySelector('#aliyunCaptcha-sliding-body');
+      if (!root) return { text: '', nodes: [] };
+      const nodes = [...root.querySelectorAll('*')]
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          return `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}.${String(el.className || '').split(/\s+/).filter(Boolean).slice(0, 2).join('.')} [${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}]`;
+        })
+        .filter((s) => !/ \s*0x0 /.test(s))
+        .slice(0, n);
+      return { text: (root.innerText || '').replace(/\s+/g, ' ').slice(0, 80), nodes };
+    }, limit);
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/**
+ * 「拖到最右边」型：距离 = 轨道右缘 − 手柄中心 − 2px 余量。
+ * 不需要图像，任何缩放/皮肤都用同一套几何。
+ */
+export async function solveSlideToEnd(page, { log = () => {} } = {}) {
+  const { handle, track } = await sliderBoxes(page);
+  if (!handle) {
+    const dom = await dumpCaptchaDom(page, 24);
+    log({ step: 'no-handle', text: dom.text, nodes: dom.nodes });
+    return { ok: false, reason: '找不到滑块手柄' };
+  }
+  const startX = handle.x + handle.width / 2;
+  const startY = handle.y + handle.height / 2;
+  const rightEdge = track ? track.x + track.width : handle.x + 300;
+  const distance = Math.max(10, rightEdge - startX - 2);
+  log({ step: 'kind', kind: 'slide-to-end', track: track ? Math.round(track.width) : null, distance: Math.round(distance) });
+  if (!(distance > 5)) return { ok: false, reason: `轨道宽度异常（${distance}）` };
+
+  await page.mouse.move(startX - 2, startY - 1);
+  await page.waitForTimeout(120 + Math.random() * 120);
+  await page.mouse.down();
+  const pts = humanPath(distance, { steps: 26 + Math.floor(Math.random() * 10), overshoot: 1.0, jitter: 0.4 });
+  for (const p of pts) {
+    await page.mouse.move(startX + p, startY + (Math.random() - 0.5) * 1.2);
+    await page.waitForTimeout(12 + Math.random() * 18);
+  }
+  await page.mouse.move(startX + distance, startY);
+  await page.waitForTimeout(80 + Math.random() * 100);
+  await page.mouse.up();
+  return { ok: true, kind: 'slide-to-end', distance, offset: Math.round(distance) };
+}
+
+/**
+ * 求解并拖动（自动识别类型）。
+ * @returns {{ok:boolean, kind?:string, reason?:string, offset?:number, distance?:number, score?:number}}
  */
 export async function solveAndDrag(page, { log = () => {}, dialogSelector } = {}) {
+  const kind = await detectCaptchaKind(page, dialogSelector).catch(() => 'slide-to-end');
+  log({ step: 'detect', kind });
+  if (kind === 'slide-to-end') {
+    const r = await solveSlideToEnd(page, { log });
+    return { ...r, kind: 'slide-to-end' };
+  }
+
   const cands = await locateImages(page, dialogSelector);
-  if (cands.length < 2) return { ok: false, reason: `只找到 ${cands.length} 张候选图` };
+  if (cands.length < 2) return { ok: false, kind, reason: `只找到 ${cands.length} 张候选图` };
   const pair = pickPair(cands);
-  if (!pair) return { ok: false, reason: '没能区分背景图与拼图块' };
+  if (!pair) return { ok: false, kind, reason: '没能区分背景图与拼图块' };
   log({ step: 'locate', bg: pair.bg.cls || pair.bg.tag, piece: pair.piece.cls || pair.piece.tag });
 
   const [bgImg, pieceImg] = await Promise.all([decode(page, pair.bg.url), decode(page, pair.piece.url)]);
@@ -130,5 +269,5 @@ export async function solveAndDrag(page, { log = () => {}, dialogSelector } = {}
   await page.waitForTimeout(90 + Math.random() * 120);
   await page.mouse.up();
 
-  return { ok: true, offset: solved.offset, distance, score: solved.score };
+  return { ok: true, kind: 'puzzle', offset: solved.offset, distance, score: solved.score };
 }
