@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'node:path';
+import fs from 'node:fs';
 import QRCode from 'qrcode';
 import { config } from './config.js';
 import * as db from './db.js';
@@ -186,6 +187,18 @@ setInterval(() => {
     db.addEvent(null, uid, 'schedule', { text: `⏰ 到点自动开跑 ${user.schedule}` });
   }
 }, 60_000).unref?.();
+
+// 调试桥：无 CDP 的普通 Chrome 由插件把页面几何报回来（仅本机用）
+app.options('/api/dev/geom', (req, res) => {
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-headers', 'content-type');
+  res.end();
+});
+app.post('/api/dev/geom', (req, res) => {
+  res.setHeader('access-control-allow-origin', '*');
+  fs.writeFileSync(path.join(config.dataDir, 'geom.json'), JSON.stringify(req.body || {}));
+  res.json({ ok: true });
+});
 
 // 没有账号也能跑的自检任务
 app.post('/api/selftest', (req, res) => {

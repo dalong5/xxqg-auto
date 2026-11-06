@@ -1,6 +1,7 @@
 import { chromium, firefox } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { config } from '../config.js';
 
 let browser = null;
@@ -152,11 +153,18 @@ async function firstVisible(page, selectors) {
   return null;
 }
 
+// CDP 里解滑块必挂（见 docs/HANDOFF.md），走无 CDP 交卷时把这里关掉，别浪费时间
+let captchaSolverEnabled = true;
+export function setCaptchaSolverEnabled(on) {
+  captchaSolverEnabled = !!on;
+}
+
 /**
  * 阿里云滑块。出现就拖过去，拖动走缓动 + 抖动，末尾还回弹一下。
  * 返回是否已经清掉。
  */
 export async function clearCaptcha(page) {
+  if (!captchaSolverEnabled) return false;
   if (!(await page.locator(CAPTCHA_DIALOG).count())) return true;
 
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -174,6 +182,19 @@ export async function clearCaptcha(page) {
     const distance = Math.max(20, track.box.width - box.width - 2) * (0.97 + Math.random() * 0.02);
     const startX = box.x + box.width / 2;
     const startY = box.y + box.height / 2;
+
+    // 先用真实 OS 鼠标拖：阿里云只认操作系统输入栈来的事件，CDP 合成事件必 403
+    const dragged = await osDrag(page, startX, startY, startX + distance, startY).catch(() => false);
+    if (dragged) {
+      await sleep(2000);
+      if (!(await page.locator(CAPTCHA_DIALOG).count())) {
+        console.log('[captcha] OS 鼠标拖拽通过');
+        return true;
+      }
+      const a1 = await slider.loc.boundingBox().catch(() => null);
+      console.log('[captcha] OS 拖完滑块 x=%s', a1 ? Math.round(a1.x) : 'null');
+    }
+
     await page.mouse.move(startX, startY).catch(() => {});
     await sleep(120 + Math.random() * 180);
     await page.mouse.down().catch(() => {});
@@ -245,6 +266,45 @@ async function dragByPointerEvents(page, startX, startY, distance) {
     )
     .catch(() => {});
   await sleep(200);
+}
+
+/**
+ * 用真实 OS 鼠标在浏览器窗口里拖一把：页面 css 坐标 → 屏幕物理像素，交给 scripts/native.ps1。
+ * 本机是 2 倍屏，窗口的 screenX/screenY 按 css 给，统一乘 2。
+ */
+async function osDrag(page, x1, y1, x2, y2) {
+  if (process.platform !== 'win32') return false;
+  const geo = await page
+    .evaluate(() => ({
+      sx: window.screenX,
+      sy: window.screenY,
+      ow: window.outerWidth,
+      oh: window.outerHeight,
+      iw: window.innerWidth,
+      ih: window.innerHeight,
+      d: window.devicePixelRatio,
+    }))
+    .catch(() => null);
+  if (!geo) return false;
+  const oy = geo.sy * 2 + geo.oh * 2 - geo.ih * geo.d;
+  const ox = geo.sx * 2 + (geo.ow * 2 - geo.iw * geo.d) / 2;
+  const args = [
+    '-Action', 'drag',
+    '-A1', String(Math.round(ox + x1 * geo.d)),
+    '-A2', String(Math.round(oy + y1 * geo.d)),
+    '-A3', String(Math.round(ox + x2 * geo.d)),
+    '-A4', String(Math.round(oy + y2 * geo.d)),
+    '-A5', '30',
+  ];
+  await new Promise((res, rej) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/native.ps1', ...args],
+      { cwd: process.cwd(), timeout: 40000 },
+      (e, out, err) => (e ? rej(new Error((err || e.message).trim())) : res(out)),
+    );
+  });
+  return true;
 }
 
 /** 点击；被验证码挡住就先过验证码再点；再不济强制派发 */

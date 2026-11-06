@@ -1,0 +1,20 @@
+[
+ {
+  "domain": ".xuexi.cn",
+  "path": "/",
+  "name": "aliyungf_tc",
+  "value": "7fb6b43ba0786117de56689a16b1abd4fadef2877c22a56590c5bbe4f03cf461"
+ },
+ {
+  "domain": ".xuexi.cn",
+  "path": "/",
+  "name": "acw_tc",
+  "value": "2f63149717936943787743888e00adf70b767233f2b571063195b65793ca5d"
+ },
+ {
+  "domain": ".xuexi.cn",
+  "path": "/",
+  "name": "token",
+  "value": "81ee0b3cdbf24e5aa6dfee7bbfe1fb13"
+ }
+]

@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import { newSession, dwell, jitter, sleep, clearCaptcha, safeClick } from './browser.js';
+import { newSession, dwell, jitter, sleep, clearCaptcha, safeClick, setCaptchaSolverEnabled } from './browser.js';
 import * as plain from './plain.js';
 
 // 每日答题的滑块只有「无 CDP 的普通 Chrome + 真实 OS 输入」能过（见 docs/HANDOFF.md）。
@@ -181,26 +181,31 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
   if (task.done >= task.max) return `${cfg.name}已满分，跳过`;
 
   const note = progress.note || (() => {});
-  if (kind === 'daily' && USE_PLAIN_DAILY && uid && jar) {
+  // 每日答题的分工：答题留在 Playwright（DOM 最稳），「完成 + 滑块」交给无 CDP 通道。
+  // 滑块只认来自 OS 输入栈的拖拽（见 docs/HANDOFF.md）。
+  //
+  // 注意：卷子是「页面级状态」——答题中途关掉浏览器再开，会从 1/5 重新开始（已实测），
+  // 所以「CDP 答题 → 关掉 → 普通 Chrome 交卷」这条路走不通。要么整卷都在 Playwright 里
+  // （滑块必挂），要么整卷都在普通 Chrome 里（XXQG_PLAIN_ONLY=1，见 plain.runDaily）。
+  const PLAIN_SUBMIT = false;
+  if (kind === 'daily' && USE_PLAIN_DAILY && uid && jar && /^(1|true|yes)$/i.test(process.env.XXQG_PLAIN_ONLY || '')) {
     try {
-      note('[plain] 每日答题走无 CDP 通道（真实鼠标过滑块）');
+      note('[plain] 每日答题全流程走无 CDP 通道');
       const r = await plain.runDaily(uid, jar);
       if (r.ok) {
         note(`[plain] 每日答题作答 ${r.answered} 题，已交卷`);
         return `${cfg.name}完成（无 CDP 通道，滑块已过）`;
       }
       note(`[plain] 无 CDP 通道没成功：${r.why || '未知'}`);
-      // CDP 通道在滑块上必挂，再跑一遍只是白耗 10 分钟；要试就显式开
-      if (!/^(1|true|yes)$/i.test(process.env.XXQG_PLAIN_FALLBACK || '')) {
-        return `${cfg.name}未完成（${r.why || '无 CDP 通道失败'}，滑块没过，未加分）`;
-      }
-      note('[plain] 按 XXQG_PLAIN_FALLBACK=1 回退 Playwright 通道');
+      return `${cfg.name}未完成（${r.why || '无 CDP 通道失败'}，未加分）`;
     } catch (e) {
       note(`[plain] 无 CDP 通道异常：${e.message}`);
-      if (!/^(1|true|yes)$/i.test(process.env.XXQG_PLAIN_FALLBACK || '')) {
-        return `${cfg.name}未完成（无 CDP 通道异常：${e.message}，未加分）`;
-      }
+      return `${cfg.name}未完成（无 CDP 通道异常：${e.message}，未加分）`;
     }
+  }
+  if (PLAIN_SUBMIT) {
+    setCaptchaSolverEnabled(false);
+    note('[plain] 本次只答题，交卷交给无 CDP 通道');
   }
 
   const { page, close } = await newSession(jar, { uid });
@@ -238,6 +243,7 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
 
     let answered = 0;
     let submitted = false;
+    let handoff = false;
     let stalls = 0;
     let lastQuestion = '';
     for (let n = 1; n <= 35; n++) {
@@ -327,6 +333,11 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
       // 最后一题的按钮是「完 成」（有的卷子是「交 卷」），点了就结束
       const submit = page.locator('.action-row button:has-text("交"), .action-row button:has-text("完")').first();
       if (await submit.count()) {
+        if (PLAIN_SUBMIT) {
+          log('答完了，交给无 CDP 通道交卷');
+          handoff = true;
+          break;
+        }
         await safeClick(page, submit).catch(() => {});
         await page.waitForTimeout(1500);
         const confirm = page.locator('.ant-modal button:has-text("确")').first();
@@ -424,6 +435,11 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
         else await page.waitForTimeout(500);
       }
       if (finished) {
+        if (PLAIN_SUBMIT) {
+          log('最后一题答完，交给无 CDP 通道交卷');
+          handoff = true;
+          break;
+        }
         // 最后一题点完会再弹一次滑块，不处理「完成」点不动
         const finish = page.locator('.action-row button:has-text("完"), button:has-text("交卷")').first();
         for (let t = 0; t < 3; t++) {
@@ -554,6 +570,13 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
     }
 
     await page.waitForTimeout(3000);
+    if (handoff) {
+      // 同一账号不许多端作答：先彻底关掉 CDP 浏览器，再换普通 Chrome 交卷
+      await close().catch(() => {});
+      log('[plain] 关掉 CDP 浏览器，换普通 Chrome 点完成 + 拖滑块');
+      const r = await plain.submitOnly(uid, jar).catch((e) => ({ ok: false, why: e.message }));
+      log(`[plain] 交卷结果：${r.ok ? '成功' : '失败'} ${r.why || ''}`);
+    }
     // 分数才算数：交卷成功就加分，没加分就是要记下来的失败
     const before = task?.done ?? 0;
     const after = await refreshCode(refresh, cfg.code);
@@ -561,7 +584,8 @@ export async function quiz(kind, { jar, progress, uid, refresh }) {
     else if (typeof after === 'number') log(`[captcha-blocked] ${cfg.name}仍未得分（${after}/${task?.max ?? '?'}），交卷没生效`);
     return `${cfg.name}作答 ${answered} 题${typeof after === 'number' && after > before ? '' : '（未加分）'}`;
   } finally {
-    await close();
+    setCaptchaSolverEnabled(true);
+    await close().catch(() => {});
   }
 }
 

@@ -1,4 +1,4 @@
-param([string]$Action, [string]$A1, [string]$A2, [string]$A3, [string]$A4, [string]$A5)
+﻿param([string]$Action, [string]$A1, [string]$A2, [string]$A3, [string]$A4, [string]$A5)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 if (-not ('N' -as [type])) {
@@ -11,20 +11,29 @@ public class N {
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, IntPtr e);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int ht, bool r);
   [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, IntPtr e);
 }
 "@
 }
 [N]::SetProcessDPIAware() | Out-Null
-function Get-Win {
-  $list = @(Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
-  if ($list.Count -eq 0) { throw 'no chrome window' }
-  $hit = $list | Where-Object { $_.MainWindowTitle -match '缁涙棃顣絴缁夘垰鍨巪鐎涳缚绡勫鍝勬禇|xuexi|閻ц缍峾Chrome' } | Select-Object -First 1
-  if (-not $hit) { $hit = $list[0] }
-  return $hit
+# Always resolve the HWND fresh: Chrome windows come and go, stale handles blow up later.
+function Resolve-Hwnd {
+  for ($i = 0; $i -lt 25; $i++) {
+    $list = @(Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+    if ($list.Count -gt 0) {
+      $hit = $list | Where-Object { $_.MainWindowTitle -match 'xuexi|Chrome' } | Select-Object -First 1
+      if (-not $hit) { $hit = $list[0] }
+      $h = $hit.MainWindowHandle
+      if ($h -and $h -ne [IntPtr]::Zero -and [N]::IsWindow($h)) { return $h }
+    }
+    Start-Sleep -Milliseconds 700
+  }
+  throw 'no chrome window'
 }
 function Focus-Win($h) {
+  if (-not $h -or $h -eq [IntPtr]::Zero -or -not [N]::IsWindow($h)) { throw 'bad window handle' }
   [N]::ShowWindow($h, 9) | Out-Null
   [N]::SetForegroundWindow($h) | Out-Null
   Start-Sleep -Milliseconds 250
@@ -35,25 +44,38 @@ function Send-Key([byte]$vk, [bool]$up) {
 }
 function Tap([byte]$vk) { Send-Key $vk $false; Send-Key $vk $true }
 function Ctrl([byte]$vk) { Send-Key 0x11 $false; Tap $vk; Send-Key 0x11 $true }
+function Set-Clip([string]$text) {
+  # Set-Clipboard  ExternalException
+  for ($i = 0; $i -lt 8; $i++) {
+    try { Set-Clipboard -Value $text; return } catch { Start-Sleep -Milliseconds 120 }
+  }
+  for ($i = 0; $i -lt 8; $i++) {
+    try { [System.Windows.Forms.Clipboard]::SetText($text); return } catch { Start-Sleep -Milliseconds 120 }
+  }
+  throw 'clipboard busy'
+}
 function Paste-Text([string]$text) {
-  Set-Clipboard -Value $text
+  Set-Clip $text
   Ctrl 0x56
   Start-Sleep -Milliseconds 260
 }
 
-$proc = $null
-if ($Action -notin @('key', 'killplain', 'list', 'type', 'esc')) { $proc = Get-Win }
+$needWin = $Action -notin @('key', 'killplain', 'list', 'type', 'esc')
+$hwnd = $null
+if ($needWin) { $hwnd = Resolve-Hwnd }
+
 switch ($Action) {
   'list' { Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { "$($_.Id) $($_.MainWindowTitle)" } }
-  'title' { $proc.MainWindowTitle }
-  'focus' { Focus-Win $proc.MainWindowHandle; 'ok' }
+  'title' { (Get-Process -Id (Get-Process chrome | Where-Object { $_.MainWindowHandle -eq $hwnd }).Id -ErrorAction SilentlyContinue).MainWindowTitle }
+  'focus' { Focus-Win $hwnd; 'ok' }
   'move' {
-    [N]::MoveWindow($proc.MainWindowHandle, [int]$A1, [int]$A2, [int]$A3, [int]$A4, $true) | Out-Null
-    Start-Sleep -Milliseconds 300
+    Focus-Win $hwnd
+    [N]::MoveWindow($hwnd, [int]$A1, [int]$A2, [int]$A3, [int]$A4, $true) | Out-Null
+    Start-Sleep -Milliseconds 400
     'ok'
   }
   'click' {
-    Focus-Win $proc.MainWindowHandle
+    Focus-Win $hwnd
     [N]::SetCursorPos([int]$A1, [int]$A2) | Out-Null
     Start-Sleep -Milliseconds 90
     [N]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
@@ -62,7 +84,7 @@ switch ($Action) {
     'ok'
   }
   'drag' {
-    Focus-Win $proc.MainWindowHandle
+    Focus-Win $hwnd
     $x1 = [int]$A1; $y1 = [int]$A2; $x2 = [int]$A3; $y2 = [int]$A4; $steps = [int]$A5
     [N]::SetCursorPos($x1, $y1) | Out-Null
     Start-Sleep -Milliseconds 130
@@ -77,9 +99,10 @@ switch ($Action) {
     [N]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
     'ok'
   }
-  #  javascript: URL Chrome  scheme
+  # Build a javascript: URL in the omnibox. Paste in three pieces to dodge Chrome
+  # stripping the scheme and the IME turning ':' into a full-width colon.
   'paste' {
-    Focus-Win $proc.MainWindowHandle
+    Focus-Win $hwnd
     Ctrl 0x4C
     Ctrl 0x41
     Paste-Text $A1
@@ -92,15 +115,24 @@ switch ($Action) {
     Tap 0x0D
     'ok'
   }
+  'nav' {
+    Focus-Win $hwnd
+    Ctrl 0x4C
+    Ctrl 0x41
+    Paste-Text $A1
+    Start-Sleep -Milliseconds 200
+    Tap 0x0D
+    'ok'
+  }
   'type' {
-    Focus-Win $proc.MainWindowHandle
+    Focus-Win $hwnd
     Ctrl 0x41
     Paste-Text $A1
     Start-Sleep -Milliseconds 150
     'ok'
   }
-  'esc' { Focus-Win $proc.MainWindowHandle; Tap 0x1B; 'ok' }
-  'enter' { Focus-Win $proc.MainWindowHandle; Tap 0x0D; 'ok' }
+  'esc' { Focus-Win $hwnd; Tap 0x1B; 'ok' }
+  'enter' { Focus-Win $hwnd; Tap 0x0D; 'ok' }
   'key' {
     Add-Type -AssemblyName System.Security
     $ls = Get-Content (Join-Path $A1 'Local State') -Raw | ConvertFrom-Json
