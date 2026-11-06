@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>学习助手 · 自动完成任务</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23e63946'/><text x='16' y='23' font-size='20' text-anchor='middle' fill='white'>学</text></svg>" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">学</span>
+        <div>
+          <h1>学习助手</h1>
+          <p class="sub">扫码一次，之后每天自动把分做完</p>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <span id="driver" class="badge" title="领域驱动">driver</span>
+        <span id="quota" class="badge ghost">0/1 账号</span>
+      </div>
+    </header>
+
+    <main>
+      <!-- 邀请码门禁 -->
+      <section id="gate" class="card gate hidden">
+        <h2>需要邀请码</h2>
+        <p class="muted">内测阶段，填对邀请码才能绑定账号。</p>
+        <form id="gate-form" class="row">
+          <input id="invite" placeholder="输入邀请码" autocomplete="off" />
+          <button class="primary" type="submit">验证</button>
+        </form>
+        <p id="gate-msg" class="msg"></p>
+      </section>
+
+      <!-- 账号列表 -->
+      <section id="accounts" class="grid"></section>
+
+      <section class="card empty" id="empty">
+        <h2>还没有绑定账号</h2>
+        <p class="muted">用学习强国 App 扫一次码，之后每天到点自动跑。</p>
+        <button class="primary" id="add-first">扫码绑定</button>
+      </section>
+
+      <section id="logcard" class="card log hidden">
+        <div class="log-head">
+          <h3 id="log-title">任务日志</h3>
+          <button class="ghost" id="log-close">收起</button>
+        </div>
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <button class="fab" id="add" title="绑定新账号">+</button>
+
+    <!-- 扫码弹层 -->
+    <div class="modal hidden" id="modal">
+      <div class="modal-box">
+        <h3>扫码登录</h3>
+        <div class="qr-wrap"><div id="qr"></div></div>
+        <p id="qr-state" class="muted">请用学习强国 App 扫描</p>
+        <button class="ghost" id="qr-cancel">取消</button>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

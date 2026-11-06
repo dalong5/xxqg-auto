@@ -1,0 +1,25 @@
+{
+  "name": "xxqg-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "学习强国自动化任务的 SaaS MVP：扫码登录、任务编排、分数同步、多租户额度",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "worker": "node src/queue/worker.js",
+    "dev": "node scripts/dev.mjs",
+    "migrate": "node src/store/migrate.js",
+    "test": "node --test \"test/*.test.mjs\"",
+    "uitest": "node scripts/uitest.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "qrcode": "^1.5.3"
+  },
+  "devDependencies": {
+    "playwright": "^1.65.0"
+  }
+}

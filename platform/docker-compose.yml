@@ -1,0 +1,36 @@
+services:
+  api:
+    build: .
+    image: xxqg-platform:latest
+    command: ["node", "src/index.js"]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATA_DIR: /data
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/readyz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # 同一个镜像，换个入口：worker 无状态，可直接 scale=3
+  worker:
+    image: xxqg-platform:latest
+    command: ["node", "src/queue/worker.js"]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATA_DIR: /data
+      WORKER_CONCURRENCY: "1"
+    volumes:
+      - ./data:/data
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
