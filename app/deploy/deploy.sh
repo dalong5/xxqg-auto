@@ -10,7 +10,7 @@ APP_DIR=/opt/xxqg-auto/app
 REL_DIR="/opt/xxqg-auto/releases/${VER}"
 DATA_VOL=xxqg_xxqg-data
 PROJECT=xxqg
-COMPOSE_FILES=(-f "$APP_DIR/compose.yml" -f "$APP_DIR/compose.server.yml" -f "$APP_DIR/compose.instance.yml")
+COMPOSE_FILES=(-f "$APP_DIR/docker-compose.yml" -f "$APP_DIR/compose.server.yml" -f "$APP_DIR/compose.instance.yml")
 
 log() { printf '\n== %s ==\n' "$*"; }
 

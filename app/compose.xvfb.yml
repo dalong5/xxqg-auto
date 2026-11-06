@@ -1,0 +1,12 @@
+# Xvfb 覆盖配置：给 worker 一个虚拟显示，让 OS 级鼠标可用（XTest）。
+# 用法：
+#   docker compose -f docker-compose.yml -f compose.server.yml -f compose.instance.yml \
+#                  -f compose.xvfb.yml up -d --build
+# 前提：镜像里装了 xvfb / xdotool（见 Dockerfile 的 XXQG_XVFB 段）
+services:
+  worker:
+    environment:
+      DISPLAY: ":99"
+      XXQG_HEADED: "1"
+    entrypoint: ["bash", "/app/deploy/xvfb-entrypoint.sh"]
+    command: ["node", "src/worker.js"]
