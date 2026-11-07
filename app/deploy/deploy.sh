@@ -6,8 +6,17 @@
 set -euo pipefail
 
 VER="${1:?用法: deploy.sh <版本号>}"
+# 空版本号会连累下面的 rm -rf 把整个 releases 目录删掉，必须先挡住
+if [ -z "$(printf '%s' "$VER" | tr -d '[:space:]')" ]; then
+  echo "版本号不能为空" >&2
+  exit 2
+fi
 APP_DIR=/opt/xxqg-auto/app
-REL_DIR="/opt/xxqg-auto/releases/${VER}"
+RELEASES_DIR=/opt/xxqg-auto/releases
+REL_DIR="${RELEASES_DIR}/${VER}"
+# releases 目录可能被别的 umask 建成 700 root，ubuntu 用户就进不去（发布包解压/排查都会失败）
+mkdir -p "$RELEASES_DIR"
+chmod 755 "$RELEASES_DIR" 2>/dev/null || true
 DATA_VOL=xxqg_xxqg-data
 PROJECT=xxqg
 COMPOSE_FILES=(-f "$APP_DIR/docker-compose.yml" -f "$APP_DIR/compose.server.yml" -f "$APP_DIR/compose.instance.yml")
