@@ -373,6 +373,24 @@ async function loginLoop() {
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 看门狗的一次检查（抽出来便于故障注入测试）。
+ * 卡住的任务：先落库失败，再关浏览器让挂起的 await 抛错收尾。
+ * @returns {Promise<number>} 本次处理的任务数
+ */
+export async function watchdogTick({ workerId = WORKER_ID, silenceMs = WATCHDOG_SILENCE_MS, close = closeBrowser } = {}) {
+  const stuck = db.stuckJobs(workerId, silenceMs);
+  for (const job of stuck) {
+    const msg = `任务 ${Math.round(silenceMs / 60000)} 分钟无进展，已强制终止（可能卡在页面操作上）`;
+    db.failJob(job.id, msg, false);
+    db.addEvent(job.id, job.uid, 'error', { error: msg });
+    console.error('[watchdog] %s %s', job.id.slice(0, 8), msg);
+    await close().catch(() => {});
+    browserClosed = true;
+  }
+  return stuck.length;
+}
+
 export async function startWorker() {
   // 先注册心跳再回收，否则会把自己刚领的任务当成死任务
   db.beat(WORKER_ID);
@@ -398,20 +416,8 @@ export async function startWorker() {
 
   // 看门狗：任务卡在某个没有超时的调用上（例如 page.evaluate）时，
   // 事件流会长时间沉默。关掉浏览器让挂起的 await 抛错，任务才能收尾。
-  setInterval(async () => {
-    try {
-      const stuck = db.stuckJobs(WORKER_ID, WATCHDOG_SILENCE_MS);
-      for (const job of stuck) {
-        const msg = `任务 ${Math.round(WATCHDOG_SILENCE_MS / 60000)} 分钟无进展，已强制终止（可能卡在页面操作上）`;
-        db.failJob(job.id, msg, false);
-        db.addEvent(job.id, job.uid, 'error', { error: msg });
-        console.error('[watchdog] %s %s', job.id.slice(0, 8), msg);
-        await closeBrowser().catch(() => {});
-        browserClosed = true;
-      }
-    } catch (e) {
-      console.error('[watchdog] 检查失败:', e.message);
-    }
+  setInterval(() => {
+    watchdogTick().catch((e) => console.error('[watchdog] 检查失败:', e.message));
   }, 60_000).unref?.();
 }
 

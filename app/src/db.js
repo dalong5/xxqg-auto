@@ -249,17 +249,20 @@ export function scheduledJobError(job) {
 export function claimJob(kind, workerId) {
   // 空队列时先做一次只读判断：原来是每个执行器每 0.7 秒发一次 UPDATE（写事务），
   // 空闲时也在不停写 WAL。读命中索引 idx_jobs_status，成本极低。
-  if (!db.prepare("SELECT 1 FROM jobs WHERE status = 'queued' AND kind = ? LIMIT 1").get(kind)) return null;
+  const at = now();
+  // created_at <= at：失败重试会把 created_at 推到未来形成退避，
+  // 没有这个条件的话"退避"其实立刻就会被领走。
+  if (!db.prepare("SELECT 1 FROM jobs WHERE status = 'queued' AND kind = ? AND created_at <= ? LIMIT 1").get(kind, at)) return null;
   const row = db
     .prepare(
       `UPDATE jobs SET status = 'running', worker = ?, started_at = ?, attempts = attempts + 1
        WHERE id = (
-         SELECT id FROM jobs WHERE status = 'queued' AND kind = ?
+         SELECT id FROM jobs WHERE status = 'queued' AND kind = ? AND created_at <= ?
          ORDER BY created_at LIMIT 1
        ) AND status = 'queued'
        RETURNING *`,
     )
-    .get(workerId, now(), kind);
+    .get(workerId, at, kind, at);
   return row || null;
 }
 
