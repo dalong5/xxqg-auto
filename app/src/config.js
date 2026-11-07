@@ -50,6 +50,10 @@ export const config = {
   // 单个 worker 进程的任务并发 / 扫码并发（扫码只走 HTTP，可以开很大）
   workerConcurrency: positiveInt(process.env.WORKER_CONCURRENCY, 2),
   loginConcurrency: positiveInt(process.env.LOGIN_CONCURRENCY, 30),
+  // 扫码窗口：每张二维码给多久、整场最多多久。
+  // 注意 db.deleteStaleLogins 的过期阈值必须比 total 更长，否则用户还在扫就被判过期。
+  loginScanPerCodeMs: positiveInt(process.env.LOGIN_SCAN_PER_CODE_MS, 150_000),
+  loginScanTotalMs: positiveInt(process.env.LOGIN_SCAN_TOTAL_MS, 300_000),
   // 每个访客最多挂几个账号（单机自用先给 1，开放注册时调大）
   maxAccounts: positiveInt(process.env.MAX_ACCOUNTS, 1),
   // 单篇材料停留秒数（页面自己按停留时长上报，太短计不上分）

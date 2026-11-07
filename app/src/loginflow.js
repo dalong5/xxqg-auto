@@ -1,3 +1,4 @@
+import { config } from './config.js';
 import { db, getLogin, updateLogin, upsertUser, setUserScore, addEvent } from './db.js';
 import { Jar, getSign, newQrCode, pollQr, secureCheck, userInfo, score } from './xxqg/client.js';
 import { retryTransient } from './util.js';
@@ -45,8 +46,8 @@ export async function driveLogin(sid) {
     // 每张二维码给 150 秒，换码后重新计时；但整场扫码最多 5 分钟，
     // 避免用户离开页面后会话一直挂着占名额。
     const startedAt = Date.now();
-    const PER_CODE_MS = 150_000;
-    const TOTAL_MS = 300_000;
+    const PER_CODE_MS = config.loginScanPerCodeMs;
+    const TOTAL_MS = config.loginScanTotalMs;
     let deadline = nextQrDeadline({ startedAt, perCode: PER_CODE_MS, total: TOTAL_MS });
     while (Date.now() < deadline) {
       const current = getLogin(sid);

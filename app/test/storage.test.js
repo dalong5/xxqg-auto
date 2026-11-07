@@ -34,9 +34,12 @@ test('yesterday scores are not presented as todays cached progress', (t) => {
   assert.equal(db.listUsers('v')[0].last_score, null);
 });
 
-test('interrupted pending logins expire and emit a failure event', () => {
+test('interrupted pending logins expire and emit a failure event', async () => {
+  // 过期阈值跟随扫码窗口（config.loginScanTotalMs + 1 分钟缓冲），
+  // 不能再写死 181s：扫码窗口是 5 分钟，写死 3 分钟会把正在扫码的用户判过期。
+  const { config } = await import('../src/config.js');
   const row = db.createLogin('v');
-  db.updateLogin(row.sid, { status: 'waiting', created_at: Date.now() - 181000 });
+  db.updateLogin(row.sid, { status: 'waiting', created_at: Date.now() - (config.loginScanTotalMs + 120_000) });
   db.deleteStaleLogins();
   assert.equal(db.getLogin(row.sid).status, 'failed');
   assert.equal(db.eventsAfter(row.sid).at(-1).type, 'failed');

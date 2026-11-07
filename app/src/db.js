@@ -136,7 +136,10 @@ export function updateLogin(sid, patch) {
 }
 
 export const deleteStaleLogins = () => {
-  const expired = db.prepare("UPDATE logins SET status = 'failed', error = '登录会话已过期，请重新生成二维码' WHERE status IN ('starting','init','waiting') AND created_at < ? RETURNING sid").all(now() - 180_000);
+  // 过期阈值 = 扫码总窗口 + 1 分钟缓冲。写死 180s 会跟 5 分钟的扫码窗口打架：
+  // 用户刚打开手机准备扫，会话已被判过期，SSE 直接推 failed。
+  const staleAfter = config.loginScanTotalMs + 60_000;
+  const expired = db.prepare("UPDATE logins SET status = 'failed', error = '登录会话已过期，请重新生成二维码' WHERE status IN ('starting','init','waiting') AND created_at < ? RETURNING sid").all(now() - staleAfter);
   for (const row of expired) addEvent(row.sid, null, 'failed', { error: '登录会话已过期，请重新生成二维码' });
   // 成功的登录会话保留 7 天：它的 jar 是明文，可作为密钥轮换后恢复 cookie 的备份
   db.prepare("DELETE FROM logins WHERE status = 'done' AND created_at < ?").run(now() - 7 * 86400_000);
