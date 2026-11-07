@@ -93,11 +93,30 @@ docker compose "${COMPOSE_FILES[@]}" --project-name "$PROJECT" build
 docker compose "${COMPOSE_FILES[@]}" --project-name "$PROJECT" up -d
 
 log "5. 等待健康"
+healthy=0
 for i in $(seq 1 40); do
-  if curl -fsS http://127.0.0.1:8099/healthz >/dev/null 2>&1; then echo "healthz ok"; break; fi
+  if curl -fsS http://127.0.0.1:8099/healthz >/dev/null 2>&1; then echo "healthz ok"; healthy=1; break; fi
   sleep 3
-  [ "$i" = 40 ] && { echo "健康检查超时"; docker compose "${COMPOSE_FILES[@]}" --project-name "$PROJECT" ps; exit 3; }
 done
+if [ "$healthy" != "1" ]; then
+  echo "健康检查超时，尝试回滚到 pre-${VER}"
+  docker compose "${COMPOSE_FILES[@]}" --project-name "$PROJECT" ps
+  if docker image inspect "xxqg-api:pre-${VER}" >/dev/null 2>&1; then
+    docker tag "xxqg-api:pre-${VER}" xxqg-api:latest
+    docker tag "xxqg-worker:pre-${VER}" xxqg-worker:latest 2>/dev/null || true
+    docker compose "${COMPOSE_FILES[@]}" --project-name "$PROJECT" up -d --no-build
+    for i in $(seq 1 20); do
+      if curl -fsS http://127.0.0.1:8099/healthz >/dev/null 2>&1; then
+        echo "已回滚到 pre-${VER}，服务恢复"; exit 5
+      fi
+      sleep 3
+    done
+    echo "回滚后仍不健康，需要人工介入（数据卷未改动）"; exit 5
+  fi
+  echo "没有 pre-${VER} 镜像，无法自动回滚；用 $REL_DIR/previous-source.tar.gz 重建："
+  echo "  tar xzf $REL_DIR/previous-source.tar.gz -C $APP_DIR && cd $APP_DIR && docker compose ${COMPOSE_FILES[*]} --project-name $PROJECT build && docker compose ${COMPOSE_FILES[*]} --project-name $PROJECT up -d"
+  exit 3
+fi
 
 log "6. 校验"
 curl -fsS http://127.0.0.1:8099/healthz; echo
