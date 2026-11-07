@@ -1,4 +1,4 @@
-import { config } from '../config.js';
+import { config, positiveInt } from '../config.js';
 import { newSession, dwell, jitter, sleep, clearCaptcha, safeClick } from './browser.js';
 
 const ARTICLE_FEEDS = [
@@ -160,22 +160,43 @@ async function readTips(page) {
 }
 
 /** 把还空着的空位随便用剩余词块填满，不然交不上去 */
+/**
+ * 兜底填空：提示对不上时挨个把空位填满。
+ * 注意两种「0」要分开：
+ *   - 页面上根本没有 .click-box（不是点选填空）→ 返回 false
+ *   - 有空位但都填了 → 返回 true
+ * 原实现把两者都当成功，遇到别的题型会误报"已填好"。
+ */
 async function fillEmptyBlanks(page) {
+  const used = new Set();
   for (let round = 0; round < 12; round++) {
-    const empty = await page
+    const stat = await page
       .evaluate(() => {
-        const boxes = [...document.querySelectorAll('.click-box')].filter((e) => !e.innerText.trim());
-        if (!boxes.length) return 0;
-        boxes[0].click();
-        return boxes.length;
+        const boxes = [...document.querySelectorAll('.click-box')];
+        if (!boxes.length) return { total: 0, empty: 0 };
+        const emptyBoxes = boxes.filter((e) => !e.innerText.trim());
+        if (!emptyBoxes.length) return { total: boxes.length, empty: 0 };
+        emptyBoxes[0].click();
+        return { total: boxes.length, empty: emptyBoxes.length };
       })
-      .catch(() => 0);
-    if (!empty) return true;
+      .catch(() => ({ total: 0, empty: 0 }));
+    if (!stat.total) return false;
+    if (!stat.empty) return true;
     await page.waitForTimeout(250);
     const chips = page.locator('.fill-answer');
     const n = await chips.count();
     if (!n) return false;
-    await safeClick(page, chips.nth(Math.floor(Math.random() * n)));
+    // 尽量别重复用同一个词块；都试过了才回到随机
+    let pick = Math.floor(Math.random() * n);
+    for (let i = 0; i < n; i++) {
+      const cand = (i + round) % n;
+      if (!used.has(cand)) {
+        pick = cand;
+        break;
+      }
+    }
+    used.add(pick);
+    await safeClick(page, chips.nth(pick));
     await page.waitForTimeout(250);
   }
   return false;
@@ -216,9 +237,15 @@ export function pickChip(rest, chipTexts, used = new Set()) {
 }
 
 /**
- * 答题：题目页自带「查看提示」，提示里就是答案。
- * 这是官方答案源，比外部题库稳，不用维护答案表。
+ * 每日答题每题等待秒数。
+ * 环境变量写错（DAILY_WAIT_MIN=abc）时 Number() 得到 NaN，
+ * 会让 setTimeout 立即返回 —— 等于完全不等待，风险极高。所以统一走 positiveInt。
  */
+export function dailyWaitSeconds(env = process.env, random = Math.random) {
+  const min = positiveInt(env.DAILY_WAIT_MIN, 20);
+  const max = Math.max(min, positiveInt(env.DAILY_WAIT_MAX, 60));
+  return min + Math.floor(random() * (max - min + 1));
+}
 export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
   const cfg = EXAM_ENTRY[kind];
   if (!cfg) throw new Error(`未知题型 ${kind}`);
@@ -271,10 +298,9 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
       if (kind === 'daily') {
         // 每题等待：默认 20–60 秒（防封号优先于快，仓库测试也按这个区间断言）；
         // 想更快可设 DAILY_WAIT_MIN/DAILY_WAIT_MAX，例如 3/10。
-        const waitMin = Number(process.env.DAILY_WAIT_MIN ?? 20);
-        const waitMax = Number(process.env.DAILY_WAIT_MAX ?? 60);
-        const span = Math.max(0, waitMax - waitMin);
-        const seconds = waitMin + Math.floor(Math.random() * (span + 1));
+        // 注意必须走 dailyWaitSeconds：直接 Number() 遇到脏环境变量会得到 NaN，
+        // setTimeout(NaN) 等于立即执行，等于完全不等待。
+        const seconds = dailyWaitSeconds();
         log(`阅读本题，等待 ${seconds} 秒后作答`);
         await sleep(seconds * 1000, shouldStop);
         if (shouldStop?.()) throw new Error('任务执行时间已到，停止答题');
