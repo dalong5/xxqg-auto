@@ -13,6 +13,16 @@ const VIDEO_FEEDS = [
   'https://www.xuexi.cn/lgdata/31c9ca1tgfqb.json',
 ];
 
+/** 洗牌（Fisher-Yates），用注入的 random 便于测试 */
+export function shuffle(list, random = Math.random) {
+  const arr = [...list];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 async function feed(kind) {
   const list = kind === 'video' ? VIDEO_FEEDS : ARTICLE_FEEDS;
   const url = list[Math.floor(Math.random() * list.length)];
@@ -54,6 +64,8 @@ export async function learn(kind, { jar, progress, shouldStop, uid, jobId }) {
   }
 
   const items = await feed(kind);
+  // 打乱后按顺序取，避免随机重复抽到同一篇（重复阅读不计分、白等 60 秒）
+  const queue = shuffle(items);
   const { page, close } = await newSession(jar, { uid, jobId, shouldStop });
   try {
     await page.goto('https://www.xuexi.cn/notFound.html', { waitUntil: 'domcontentloaded' });
@@ -65,7 +77,8 @@ export async function learn(kind, { jar, progress, shouldStop, uid, jobId }) {
       let t = timeCap();
       if (c && t && c.done >= c.max && t.done >= t.max) break;
 
-      const item = items[Math.floor(Math.random() * items.length)];
+      // 队列取完（很少见）再回退到随机，保证不会空转
+      const item = queue.shift() || items[Math.floor(Math.random() * items.length)];
       await page.goto(item.url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
       count++;
       await clearCaptcha(page);
