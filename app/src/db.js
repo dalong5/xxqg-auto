@@ -295,6 +295,20 @@ export const findActiveJob = (visitorId, kind) =>
   db
     .prepare("SELECT id, status FROM jobs WHERE visitor_id = ? AND kind = ? AND status IN ('queued','running','pausing','paused') ORDER BY created_at LIMIT 1")
     .get(visitorId, kind) || null;
+
+/**
+ * 看门狗：本执行器名下、长时间没有任何事件的任务。
+ * 事件流是任务的"心跳"，沉默太久说明卡在某个 Playwright 调用上（evaluate 没有超时）。
+ */
+export const stuckJobs = (workerId, silenceMs) =>
+  db
+    .prepare(
+      `SELECT j.id, j.uid, j.status FROM jobs j
+       WHERE j.worker = ? AND j.status IN ('running','pausing')
+         AND (SELECT COALESCE(MAX(e.created_at), j.started_at) FROM events e WHERE e.job_id = j.id) < ?
+       LIMIT 5`,
+    )
+    .all(workerId, now() - silenceMs);
 export const queuedCount = () => db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'").get().n;
 
 // ---------- worker 心跳 ----------

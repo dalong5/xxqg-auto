@@ -279,6 +279,8 @@ let stopping = false;
  * 空闲超过 BROWSER_IDLE_CLOSE_MS 就关掉，下一个任务来了再懒启动。
  */
 const IDLE_CLOSE_MS = Number(process.env.BROWSER_IDLE_CLOSE_MS ?? 120_000);
+// 看门狗阈值：正常情况下阅读/视听每 60 秒内必有一条进度日志，10 分钟沉默一定不正常
+const WATCHDOG_SILENCE_MS = Number(process.env.WATCHDOG_SILENCE_MS ?? 600_000);
 let lastJobAt = Date.now();
 let browserClosed = false;
 
@@ -393,6 +395,24 @@ export async function startWorker() {
   setInterval(() => {
     db.addEvent(null, null, 'heartbeat', { worker: WORKER_ID, at: Date.now() });
   }, 30_000).unref?.();
+
+  // 看门狗：任务卡在某个没有超时的调用上（例如 page.evaluate）时，
+  // 事件流会长时间沉默。关掉浏览器让挂起的 await 抛错，任务才能收尾。
+  setInterval(async () => {
+    try {
+      const stuck = db.stuckJobs(WORKER_ID, WATCHDOG_SILENCE_MS);
+      for (const job of stuck) {
+        const msg = `任务 ${Math.round(WATCHDOG_SILENCE_MS / 60000)} 分钟无进展，已强制终止（可能卡在页面操作上）`;
+        db.failJob(job.id, msg, false);
+        db.addEvent(job.id, job.uid, 'error', { error: msg });
+        console.error('[watchdog] %s %s', job.id.slice(0, 8), msg);
+        await closeBrowser().catch(() => {});
+        browserClosed = true;
+      }
+    } catch (e) {
+      console.error('[watchdog] 检查失败:', e.message);
+    }
+  }, 60_000).unref?.();
 }
 
 export function stopWorker() {
