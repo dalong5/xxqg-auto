@@ -105,7 +105,7 @@ function ownsJob(job, visitor) {
 function activeJob(uid) {
   return (
     db.db
-      .prepare("SELECT id, status FROM jobs WHERE uid = ? AND status IN ('queued','running','pausing','paused') ORDER BY created_at DESC LIMIT 1")
+      .prepare("SELECT id, status, kind, tasks FROM jobs WHERE uid = ? AND status IN ('queued','running','pausing','paused') ORDER BY created_at DESC LIMIT 1")
       .get(uid) || null
   );
 }
@@ -128,7 +128,23 @@ app.post('/api/users/:uid/run', (req, res) => {
   const tasks = asked.filter((t) => ['login', 'article', 'video', 'daily', 'weekly', 'special'].includes(t));
   if (!tasks.length || tasks.length !== asked.length) return res.status(400).json({ error: '任务类型无效' });
   const active = activeJob(user.uid);
-  if (active) return res.json({ jobId: active.id, status: active.status, tasks, queued: db.queuedCount(), reused: true });
+  if (active) {
+    // 正在跑的如果不是「跑任务」（比如同步积分），不能假装任务已入队，否则用户以为在跑了
+    if (active.kind !== 'run') {
+      return res.status(409).json({
+        error: `当前有「${TASK_NAMES[active.kind] || active.kind}」正在执行，请等它结束后再启动`,
+        jobId: active.id,
+        status: active.status,
+      });
+    }
+    return res.json({
+      jobId: active.id,
+      status: active.status,
+      tasks: parseJson(active.tasks, tasks),
+      queued: db.queuedCount(),
+      reused: true,
+    });
+  }
   const id = db.enqueue({ kind: 'run', uid: user.uid, visitorId: req.visitor, tasks });
   res.json({ jobId: id, tasks, queued: db.queuedCount() });
 });
