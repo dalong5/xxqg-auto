@@ -338,7 +338,7 @@ async function taskLoop() {
     }
     if (!job) {
       await closeIfIdle();
-      await pause(700);
+      await pause(700 + Math.floor(Math.random() * 500));
       continue;
     }
     lastJobAt = Date.now();
@@ -359,7 +359,7 @@ async function loginLoop() {
     const row = claimLogin();
     if (!row) {
       await closeIfIdle();
-      await pause(400);
+      await pause(400 + Math.floor(Math.random() * 400));
       continue;
     }
     lastJobAt = Date.now();

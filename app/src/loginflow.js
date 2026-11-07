@@ -8,6 +8,9 @@ import { retryTransient } from './util.js';
  * 登录只要 HTTP，200 个并发扫码也扛得住，所以独立于浏览器任务池。
  */
 export function claimLogin() {
+  // 没有待处理的扫码会话时先只读判断：否则每个执行器每 0.4 秒都在写一次 UPDATE，
+  // 空转就把 WAL 写大了。
+  if (!db.prepare("SELECT 1 FROM logins WHERE status = 'starting' LIMIT 1").get()) return null;
   return (
     db
       .prepare(
