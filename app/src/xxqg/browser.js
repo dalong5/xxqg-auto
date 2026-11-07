@@ -157,6 +157,22 @@ export const jitter = (base, spread = 4000) => base + Math.floor(Math.random() *
 const CAPTCHA_DIALOG = '#JS_aliyun-captcha-dialog.show';
 const SLIDER_HANDLE = '#aliyunCaptcha-sliding-slider, .aliyunCaptcha-sliding-slider, #nc_1_n1z';
 
+/** 弹窗是不是真的没了（节点残留但不可见也算通过） */
+async function captchaGone(page) {
+  const box = await page
+    .locator('#JS_aliyun-captcha-main, #JS_aliyun-captcha-dialog')
+    .first()
+    .boundingBox()
+    .catch(() => null);
+  if (!box || box.width < 20 || box.height < 20) return true;
+  const text = await page
+    .locator('#JS_aliyun-captcha-main, #JS_aliyun-captcha-dialog')
+    .first()
+    .innerText()
+    .catch(() => '');
+  return /验证通过|通过验证/.test(text || '');
+}
+
 /**
  * 用「真实 OS 鼠标」把滑块拖过去：Windows 走 SendInput，Linux 走 xdotool(XTest)。
  * 无桌面（容器没起 Xvfb / 没有 DISPLAY）时返回 false，调用方继续走人工验证。
@@ -194,8 +210,9 @@ export async function clearCaptcha(page) {
 
   if (solved.ok) {
     await sleep(1500);
-    if (!(await page.locator(CAPTCHA_DIALOG).count())) {
-      console.log('[captcha] 自动通过（kind=%s，距离=%s）', solved.kind, Math.round(solved.distance));
+    // 过没过以「弹窗是否还可见」为准：这套皮肤通过后节点会残留一会儿，count() 会误判
+    if (await captchaGone(page)) {
+      console.log('[captcha] 自动通过（kind=%s，距离=%s，moved=%s）', solved.kind, Math.round(solved.distance), solved.moved);
       return true;
     }
     console.log('[captcha] 合成拖动未被接受（kind=%s，距离=%s），改用真实鼠标重拖', solved.kind, Math.round(solved.distance));
@@ -207,7 +224,7 @@ export async function clearCaptcha(page) {
     });
     if (os) {
       await sleep(2000);
-      if (!(await page.locator(CAPTCHA_DIALOG).count())) {
+      if (await captchaGone(page)) {
         console.log('[captcha] 真实鼠标拖动通过（距离=%s）', Math.round(solved.distance));
         return true;
       }

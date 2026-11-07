@@ -47,7 +47,13 @@ test('an incorrect answer can advance through its explanation to the next questi
     });
     assert.match(await quiz('daily', { progress }), /已确认计分 5\/5/);
     assert.equal(questionDelays.length, 2, 'both questions, including the final one, must have a reading delay');
-    assert.ok(questionDelays.every(ms => ms >= 20_000 && ms <= 60_000), 'each question waits 20–60 seconds');
+    // 等待区间由 DAILY_WAIT_MIN/MAX 决定（默认 20–60；本地调试可能设成 2–10）
+    const waitMin = Number(process.env.DAILY_WAIT_MIN ?? 20) * 1000;
+    const waitMax = Number(process.env.DAILY_WAIT_MAX ?? 60) * 1000;
+    assert.ok(
+      questionDelays.every(ms => ms >= waitMin && ms <= waitMax),
+      `each question waits ${waitMin / 1000}–${waitMax / 1000} seconds`,
+    );
   } finally { await browser.close(); }
 });
 test.after(() => rmSync(process.env.DATA_DIR, { recursive: true, force: true }));

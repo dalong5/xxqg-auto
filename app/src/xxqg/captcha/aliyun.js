@@ -187,35 +187,159 @@ export async function dumpCaptchaDom(page, limit = 24) {
 }
 
 /**
+ * 在页面里量出滑块手柄与轨道。真实站点（2026-11-08 实测）结构：
+ *   div#JS_aliyun-captcha-main            ← 整个弹窗（374x174）
+ *     div#JS_aliyun-captcha-logo-wrapper  ← 红色横幅
+ *     div#JS_aliyun-captcha-close-btn     ← 右上角 ×（30x30，别当成手柄）
+ *     div#JS_aliyun-captcha-slider_bind_element [x,y 358x0]  ← 滑轨容器（高度为 0，子元素溢出）
+ * 手柄是滑轨里那个 .aliyunCaptcha-sliding-slider（约 40x40）。
+ */
+async function measureSlider(page) {
+  return page.evaluate(() => {
+    const box = (r) => ({ x: r.x, y: r.y, width: r.width, height: r.height });
+    const shown = (el) => {
+      const cs = getComputedStyle(el);
+      return cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) !== 0;
+    };
+
+    const dialogs = [...document.querySelectorAll('#JS_aliyun-captcha-main, #JS_aliyun-captcha-dialog, [class*="captcha-main"]')].filter(shown);
+    const root =
+      dialogs.sort((a, b) => {
+        const ra = a.getBoundingClientRect();
+        const rb = b.getBoundingClientRect();
+        return rb.width * rb.height - ra.width * ra.height;
+      })[0] || document.body;
+
+    // 滑轨容器：优先真实 id，其次 radi текст「拖动」的那一行
+    let rail = root.querySelector('#JS_aliyun-captcha-slider_bind_element, [id*="slider_bind"], [class*="slider_bind"]');
+    if (!rail) {
+      rail = [...root.querySelectorAll('*')].find((el) => {
+        const r = el.getBoundingClientRect();
+        return /按住滑块|拖动到最右/.test(el.textContent || '') && r.width >= 150;
+      });
+    }
+
+    const railRect = rail ? rail.getBoundingClientRect() : null;
+
+    // 手柄：滑轨内带 slider 类名的元素；没有再退化为滑轨内靠左的小方块
+    let handle = null;
+    if (rail) {
+      const cand = [...rail.querySelectorAll('*')]
+        .filter(shown)
+        .map((el) => ({ el, r: el.getBoundingClientRect() }))
+        .filter((n) => n.r.width >= 18 && n.r.width <= 80 && n.r.height >= 18 && n.r.height <= 80);
+      const byClass = cand.find((n) => /slider|handle|btn/i.test(String(n.el.className || '') + n.el.id));
+      handle = (byClass || cand.sort((a, b) => a.r.x - b.r.x)[0])?.r || null;
+    }
+    if (!handle) {
+      handle =
+        [...root.querySelectorAll('.aliyunCaptcha-sliding-slider, #aliyunCaptcha-sliding-slider, [class*="sliding-slider"]')]
+          .filter(shown)
+          .map((el) => el.getBoundingClientRect())[0] || null;
+    }
+
+    return {
+      root: root ? box(root.getBoundingClientRect()) : null,
+      track: railRect ? box(railRect) : null,
+      handle: handle ? box(handle) : null,
+    };
+  });
+}
+
+/** 等滑块真正出现（弹窗有入场动画，元素可能晚几百毫秒才有尺寸） */
+async function waitForSlider(page, timeout = 4000) {
+  const deadline = Date.now() + timeout;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await measureSlider(page).catch(() => null);
+    if (last?.handle && last?.track && last.track.width > 120) return last;
+    await page.waitForTimeout(200);
+  }
+  return last;
+}
+
+/**
  * 「拖到最右边」型：距离 = 轨道右缘 − 手柄中心 − 2px 余量。
  * 不需要图像，任何缩放/皮肤都用同一套几何。
  */
-export async function solveSlideToEnd(page, { log = () => {} } = {}) {
-  const { handle, track } = await sliderBoxes(page);
-  if (!handle) {
-    const dom = await dumpCaptchaDom(page, 24);
+export async function solveSlideToEnd(page, { log = () => {}, attempts = 3 } = {}) {
+  const measured = await waitForSlider(page).catch((e) => ({ error: e.message }));
+  const dom = await dumpCaptchaDom(page, 30);
+  log({ step: 'dom', text: dom.text, handle: measured?.handle, track: measured?.track, nodes: dom.nodes });
+  if (!measured?.handle || !measured?.track) {
     log({ step: 'no-handle', text: dom.text, nodes: dom.nodes });
-    return { ok: false, reason: '找不到滑块手柄' };
+    return { ok: false, reason: measured?.handle ? '找不到滑轨' : '找不到滑块手柄' };
   }
-  const startX = handle.x + handle.width / 2;
-  const startY = handle.y + handle.height / 2;
-  const rightEdge = track ? track.x + track.width : handle.x + 300;
-  const distance = Math.max(10, rightEdge - startX - 2);
-  log({ step: 'kind', kind: 'slide-to-end', track: track ? Math.round(track.width) : null, distance: Math.round(distance) });
-  if (!(distance > 5)) return { ok: false, reason: `轨道宽度异常（${distance}）` };
 
-  await page.mouse.move(startX - 2, startY - 1);
-  await page.waitForTimeout(120 + Math.random() * 120);
-  await page.mouse.down();
-  const pts = humanPath(distance, { steps: 26 + Math.floor(Math.random() * 10), overshoot: 1.0, jitter: 0.4 });
-  for (const p of pts) {
-    await page.mouse.move(startX + p, startY + (Math.random() - 0.5) * 1.2);
-    await page.waitForTimeout(12 + Math.random() * 18);
+  // 拖到最右 = 让手柄右边缘贴到滑轨右边缘
+  const startHandle = measured.handle;
+  const trackRight = measured.track.x + measured.track.width;
+  const startX = startHandle.x + startHandle.width / 2;
+  const startY = startHandle.y + startHandle.height / 2;
+  const distance = Math.round(Math.max(10, trackRight - (startHandle.x + startHandle.width) + 2));
+  log({ step: 'plan', kind: 'slide-to-end', trackW: Math.round(measured.track.width), handleW: Math.round(startHandle.width), distance });
+  if (!(distance > 20)) return { ok: false, reason: `计算出的距离异常（${distance}）` };
+
+  // 诊断：这个点上到底是什么元素？有没有 iframe 盖在上面？（evaluate 只接受一个参数，包成对象）
+  const probe = await page
+    .evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      const desc = (e) =>
+        e ? `${e.tagName.toLowerCase()}${e.id ? '#' + e.id : ''}.${String(e.className || '').split(/\s+/).filter(Boolean).slice(0, 2).join('.')}` : 'null';
+      const frames = [...document.querySelectorAll('iframe')].map((f) => {
+        const r = f.getBoundingClientRect();
+        return `${f.id || f.name || 'iframe'} [${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}]`;
+      });
+      return { at: desc(el), frames };
+    }, { x: startX, y: startY })
+    .catch((e) => ({ error: e.message }));
+  log({ step: 'hit-test', at: probe?.at ?? null, frames: probe?.frames ?? null, err: probe?.error ?? null });
+
+  let last = { ok: false, reason: '未执行' };
+  for (let n = 1; n <= attempts; n++) {
+    await page.mouse.move(startX - 2, startY - 1);
+    await page.waitForTimeout(120 + Math.random() * 120);
+    await page.mouse.down();
+    const pts = humanPath(distance, { steps: 24 + Math.floor(Math.random() * 10), overshoot: 1.0, jitter: 0.35 });
+    for (const p of pts) {
+      await page.mouse.move(startX + p, startY + (Math.random() - 0.5) * 1.2);
+      await page.waitForTimeout(12 + Math.random() * 18);
+    }
+    await page.mouse.move(startX + distance + 4, startY);
+    await page.waitForTimeout(90 + Math.random() * 120);
+    await page.mouse.up();
+    await page.waitForTimeout(700);
+
+    // 验收三件事：手柄是否移动 / 是否出现「验证通过」/ 弹窗是否消失
+    const after = await measureSlider(page).catch(() => null);
+    const moved = after?.handle ? Math.round(after.handle.x - startHandle.x) : -1;
+    const box = await page
+      .locator('#JS_aliyun-captcha-main, #JS_aliyun-captcha-dialog')
+      .first()
+      .boundingBox()
+      .catch(() => null);
+    const hint = await page
+      .locator('#JS_aliyun-captcha-main, #JS_aliyun-captcha-dialog')
+      .first()
+      .innerText()
+      .then((t) => t.replace(/\s+/g, ' ').slice(0, 40))
+      .catch(() => '');
+    const passed = /验证通过|通过验证|success/i.test(hint);
+    const closed = !box || box.width === 0 || box.height === 0;
+    log({ step: 'attempt', n, moved, passed, closed, hint });
+
+    if (passed || closed) {
+      return { ok: true, kind: 'slide-to-end', distance, offset: distance, moved, passed, closed, hint };
+    }
+
+    last = { ok: false, reason: `拖动后仍未通过（手柄移动 ${moved}px，目标 ${distance}px）`, distance, moved, hint };
+    // 手柄压根没动 = 按下点没落在滑块上，值得再试；动了但没过 = 风控拒绝，别刷
+    if (moved > distance * 0.6) break;
+    if (n === attempts) {
+      await page.screenshot({ path: 'data/captcha-fail.png', fullPage: false }).catch(() => {});
+    }
   }
-  await page.mouse.move(startX + distance, startY);
-  await page.waitForTimeout(80 + Math.random() * 100);
-  await page.mouse.up();
-  return { ok: true, kind: 'slide-to-end', distance, offset: Math.round(distance) };
+  return last;
 }
 
 /**
