@@ -6,9 +6,10 @@ import * as db from './db.js';
 import { ensureVisitor, rateLimit } from './auth.js';
 import { qrContent } from './xxqg/client.js';
 import { TASK_NAMES, logText, userError } from './messages.js';
+import { parseJson } from './util.js';
 
 function eventMessage(event) {
-  const payload = event.payload ? JSON.parse(event.payload) : null;
+  const payload = event.payload ? parseJson(event.payload, null) : null;
   if (typeof payload?.text === 'string') payload.text = logText(payload.text);
   if (typeof payload?.error === 'string') payload.error = userError(payload.error);
   return { type: event.type, payload };
@@ -78,7 +79,7 @@ app.get('/api/login/:sid/events', (req, res) => {
 
 // ---------- 账号 ----------
 app.get('/api/users', (req, res) => {
-  res.json(db.listUsers(req.visitor).map((u) => ({ ...u, last_score: u.last_score ? JSON.parse(u.last_score) : null })));
+  res.json(db.listUsers(req.visitor).map((u) => ({ ...u, last_score: parseJson(u.last_score, null) })));
 });
 
 app.delete('/api/users/:uid', (req, res) => {
@@ -149,7 +150,7 @@ app.post('/api/jobs/:id/verification', (req, res) => {
   const frame = db.db.prepare("SELECT type, payload FROM events WHERE job_id = ? AND type IN ('verification','verification-end') ORDER BY seq DESC LIMIT 1").get(job.id);
   if (job.status !== 'running' || frame?.type !== 'verification') return res.status(409).json({ error: '当前没有待处理的验证' });
   const { kind, x, y } = req.body || {};
-  const { width, height } = JSON.parse(frame.payload);
+  const { width, height } = parseJson(frame.payload, {});
   if (!['move', 'down', 'up'].includes(kind) || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > width || y > height) {
     return res.status(400).json({ error: '鼠标坐标无效' });
   }

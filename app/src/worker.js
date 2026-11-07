@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { taskName, logText, userError } from './messages.js';
+import { parseJson } from './util.js';
 import * as db from './db.js';
 import { Jar, score } from './xxqg/client.js';
 import { learn, quiz } from './xxqg/tasks.js';
@@ -108,7 +109,7 @@ const HANDLERS = {
 
   /** 正式任务 */
   async run(job) {
-    const tasks = JSON.parse(job.tasks || '[]');
+    const tasks = parseJson(job.tasks, []);
     const jar = userJar(job);
 
     const state = { tasks: {} };
@@ -207,7 +208,9 @@ const HANDLERS = {
 };
 
 async function runTaskJob(job) {
-  const tasks = job.tasks ? JSON.parse(job.tasks) : [job.kind];
+  // 数据库里的 tasks 可能是空、旧格式或半截 JSON，解析失败就退回单任务
+  const parsed = parseJson(job.tasks, null);
+  const tasks = Array.isArray(parsed) && parsed.length ? parsed : [job.kind];
   db.addEvent(job.id, job.uid, 'start', { tasks });
   // 同时打到 stdout：docker logs 能直接看到任务起止，运维不用翻数据库
   const startedAt = Date.now();
