@@ -106,15 +106,22 @@ export async function learn(kind, { jar, progress, shouldStop, uid, jobId }) {
 
       let lastLog = 0;
       try {
-        await dwell(page, seconds, (left) => {
-          shouldStop?.();
-          // 每秒回调太吵，6 秒一条就够看
-          if (Date.now() - lastLog < 6000 && left > 1) return;
-          lastLog = Date.now();
-          c = cap();
-          t = timeCap();
-          progress.note?.(`${label}「${item.title.slice(0, 18)}」 剩 ${left}s / 还差 ${c ? c.max - c.done : '?'} 项 ${t ? t.max - t.done : '?'} 分`);
-        });
+        const interrupted = await dwell(
+          page,
+          seconds,
+          (left) => {
+            // 每秒回调太吵，6 秒一条就够看
+            if (Date.now() - lastLog < 6000 && left > 1) return;
+            lastLog = Date.now();
+            c = cap();
+            t = timeCap();
+            progress.note?.(`${label}「${item.title.slice(0, 18)}」 剩 ${left}s / 还差 ${c ? c.max - c.done : '?'} 项 ${t ? t.max - t.done : '?'} 分`);
+          },
+          shouldStop,
+        );
+        // 预算到点：不要继续傻等，直接交给上层收尾
+        // （暂停走的是 shouldStop 内部抛 TASK_PAUSED，不会走到这里）
+        if (interrupted) throw new Error('超出时长预算，已停止当前材料');
       } finally {
         if (keepPlaying) clearInterval(keepPlaying);
       }

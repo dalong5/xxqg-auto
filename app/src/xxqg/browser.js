@@ -312,16 +312,28 @@ async function humanScroll(page) {
   }).catch(() => {});
 }
 
-/** 一边停留一边慢慢下滑，页面靠可见区域和停留时长上报学习 */
-export async function dwell(page, seconds, onTick) {
+/**
+ * 一边停留一边慢慢下滑，页面靠可见区域和停留时长上报学习。
+ * shouldStop 每个小步检查一次：暂停/超预算时能立刻退出，
+ * 不用等整段停留（视频最长 180s）走完才响应。
+ * @returns {boolean} true = 提前结束（调用方应停止后续动作）
+ */
+export async function dwell(page, seconds, onTick, shouldStop = null) {
   const total = seconds * 1000;
   const step = 800 + Math.floor(Math.random() * 500);
+  let stopped = false;
   for (let passed = 0; passed < total; passed += step) {
+    if (shouldStop?.()) {
+      stopped = true;
+      break;
+    }
     await humanScroll(page);
     await sleep(step);
     onTick?.(Math.floor((total - passed) / 1000));
   }
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+  if (stopped) return true;
   // 每篇结束停一下，别像机器一样秒切下一页
   await sleep(jitter(1200, 2600));
+  return false;
 }
