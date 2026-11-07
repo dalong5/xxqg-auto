@@ -12,6 +12,25 @@ DATA_VOL=xxqg_xxqg-data
 PROJECT=xxqg
 COMPOSE_FILES=(-f "$APP_DIR/docker-compose.yml" -f "$APP_DIR/compose.server.yml" -f "$APP_DIR/compose.instance.yml")
 
+# 保留 Xvfb（虚拟显示）：上次部署如果给 worker 设了 DISPLAY，这次也要继续带上，
+# 否则 worker 会退回 headless，验证码的「真实鼠标」那一档就失效了。
+# 显式关闭：SKIP_XVFB=1；显式开启：WITH_XVFB=1
+XVFB_ACTIVE=0
+if [ "${WITH_XVFB:-0}" = "1" ]; then
+  XVFB_ACTIVE=1
+elif [ "${SKIP_XVFB:-0}" != "1" ] && [ -f "$APP_DIR/compose.xvfb.yml" ]; then
+  # 直接按 compose 标签找 worker 容器：不依赖 compose 解析，最稳
+  for cid in $(docker ps --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=worker" --format '{{.ID}}'); do
+    if docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep -q '^DISPLAY='; then
+      XVFB_ACTIVE=1
+      break
+    fi
+  done
+fi
+if [ "$XVFB_ACTIVE" = "1" ]; then
+  COMPOSE_FILES+=(-f "$APP_DIR/compose.xvfb.yml")
+fi
+
 log() { printf '\n== %s ==\n' "$*"; }
 
 log "0. 预检"
@@ -39,7 +58,7 @@ rsync -a --delete --exclude data --exclude node_modules --exclude .env \
   --exclude compose.instance.yml --exclude compose.xvfb.yml \
   "$REL_DIR/app/" "$APP_DIR/"
 
-log "4. 重建并滚动重启"
+log "4. 重建并滚动重启（Xvfb=$([ "$XVFB_ACTIVE" = 1 ] && echo 开启 || echo 关闭)）"
 cd "$APP_DIR"
 docker compose "${COMPOSE_FILES[@]}" --project-name "$PROJECT" build
 docker compose "${COMPOSE_FILES[@]}" --project-name "$PROJECT" up -d
@@ -56,6 +75,13 @@ curl -fsS http://127.0.0.1:8099/healthz; echo
 curl -fsS http://127.0.0.1:8099/api/me; echo
 docker run --rm -v "$DATA_VOL:/data" alpine:3 sh -c 'ls -l /data/secret.key; sqlite3 /data/app.db "select count(*) from users" 2>/dev/null || true'
 docker compose "${COMPOSE_FILES[@]}" --project-name "$PROJECT" ps
+if [ "$XVFB_ACTIVE" = "1" ]; then
+  for c in $(docker compose "${COMPOSE_FILES[@]}" --project-name "$PROJECT" ps -q worker); do
+    name=$(docker inspect "$c" --format '{{.Name}}')
+    disp=$(docker inspect "$c" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^DISPLAY=' | head -1)
+    echo "worker $name ${disp:-DISPLAY=(未设置，Xvfb 没生效！)}"
+  done
+fi
 
 log "7. 公网自检"
 curl -fsS -o /dev/null -w 'https=%{http_code}\n' https://1.14.105.129/ || echo "公网检查失败（可能证书/网关）"
