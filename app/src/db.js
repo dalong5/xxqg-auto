@@ -356,3 +356,7 @@ export const trimVerificationFrames = (jobId, keep = 3) =>
       "DELETE FROM events WHERE job_id = ? AND type = 'verification' AND seq NOT IN (SELECT seq FROM events WHERE job_id = ? AND type = 'verification' ORDER BY seq DESC LIMIT ?)",
     )
     .run(jobId, jobId, keep);
+
+/** 任务结束后清掉遗留的转发动作（进程中途退出时会有残留） */
+export const clearVerificationActions = (jobId) =>
+  db.prepare('DELETE FROM verification_actions WHERE job_id = ?').run(jobId);

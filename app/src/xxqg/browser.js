@@ -112,6 +112,20 @@ function loadProfile(uid) {
  * 开一个会话。同一个账号复用上次的 localStorage/设备态，避免每次都是"新设备"。
  * 调用方负责 close()。
  */
+/**
+ * 人工验证帧的尺寸。不能用 page.viewportSize()：有头模式我们把 viewport 设成 null，
+ * 它返回 null，前端拿不到 width/height 就无法把点击坐标映射回页面（人工验证会点不动）。
+ */
+export async function frameSize(page) {
+  const size = await page
+    .evaluate(() => ({ width: Math.round(window.innerWidth), height: Math.round(window.innerHeight) }))
+    .catch(() => null);
+  if (size && size.width > 0 && size.height > 0) return size;
+  const vp = page.viewportSize();
+  if (vp && vp.width > 0 && vp.height > 0) return { width: vp.width, height: vp.height };
+  return { width: 0, height: 0 };
+}
+
 export async function newSession(jar, { uid, jobId, shouldStop } = {}) {
   const b = await getBrowser();
   const state = uid ? loadProfile(uid) : undefined;
@@ -247,7 +261,8 @@ export async function clearCaptcha(page) {
       if (db.getJob(job.jobId)?.status !== 'running') throw new Error('任务已停止');
       if (Date.now() - lastFrame > 1000) {
         const image = (await page.screenshot({ type: 'jpeg', quality: 65 })).toString('base64');
-        db.addEvent(job.jobId, job.uid, 'verification', { image, ...page.viewportSize() });
+        const size = await frameSize(page);
+        db.addEvent(job.jobId, job.uid, 'verification', { image, ...size });
         // 只留最近 3 帧：人工验证最长 5 分钟，否则一次能堆几百帧、几十 MB
         db.trimVerificationFrames(job.jobId, 3);
         lastFrame = Date.now();

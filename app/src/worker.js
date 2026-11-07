@@ -223,8 +223,7 @@ async function runTaskJob(job) {
     await HANDLERS[job.kind](job);
     if (db.finishJob(job.id)?.status === 'paused') log(job, '任务已暂停，可点击继续任务');
     console.log('[job] 完成 %s 用时 %ss', job.id.slice(0, 8), Math.round((Date.now() - startedAt) / 1000));
-  } catch (e) {
-    if (e.code === 'TASK_PAUSED') {
+  } catch (e) {    if (e.code === 'TASK_PAUSED') {
       if (db.finishPausedJob(job.id)?.status === 'paused') log(job, '任务已暂停，可点击继续任务');
       console.log('[job] 暂停 %s', job.id.slice(0, 8));
       return;
@@ -240,6 +239,9 @@ async function runTaskJob(job) {
     db.failJob(job.id, e.message || e, retry);
     db.addEvent(job.id, job.uid, 'error', { error: userError(e.message || e) });
     console.log('[job] 失败 %s %s%s', job.id.slice(0, 8), userError(message), retry ? '（稍后重试）' : '');
+  } finally {
+    // 任务结束（成功/失败/暂停）都清掉遗留的转发动作，避免表里攒垃圾
+    db.clearVerificationActions(job.id);
   }
 }
 
