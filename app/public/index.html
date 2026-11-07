@@ -332,20 +332,34 @@ $('btnLogin').onclick = async () => {
   const es = new EventSource(`/api/login/${sid}/events`);
   loginStream = es;
   es.onmessage = async (e) => {
-    const { type, payload } = JSON.parse(e.data);
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    const { type, payload } = msg || {};
     if (type === 'qr') {
-      const st = await api(`/api/login/${sid}`);
-      if (st.qr) $('qrbox').innerHTML = `<img src="${st.qr}" alt="登录二维码">`;
+      const st = await api(`/api/login/${sid}`).catch(() => null);
+      if (st?.qr) $('qrbox').innerHTML = `<img src="${st.qr}" alt="登录二维码">`;
     }
     if (type === 'done') {
       es.close();
       $('qrbox').innerHTML = '<span class="hint">登录成功，可以开始任务</span>';
-      log(`登录成功：${payload.nick}`, 'ok');
-      await load(payload.uid);
+      log(`登录成功：${payload?.nick || '账号'}`, 'ok');
+      await load(payload?.uid);
     }
-    if (type === 'failed') { es.close(); $('qrbox').innerHTML = `<span class="hint">${escapeHtml(payload.error)}</span>`; log(payload.error, 'bad'); }
+    if (type === 'failed') {
+      es.close();
+      $('qrbox').innerHTML = `<span class="hint">${escapeHtml(payload?.error || '登录失败，请重新点击扫码登录')}</span>`;
+      log(payload?.error || '登录失败', 'bad');
+    }
   };
-  es.onerror = () => es.close();
+  // 不要在 onerror 里直接 close：网络抖动时 EventSource 会自动重连，
+  // 关掉只会让界面停在旧二维码上，用户不知道发生了什么。
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED) {
+      $('qrbox').innerHTML = '<span class="hint">连接中断，请重新点击扫码登录</span>';
+    } else {
+      log('登录连接中断，正在重连…', 'dim');
+    }
+  };
   // 首帧二维码可能早于 SSE 就建好
   const st = await api(`/api/login/${sid}`).catch(() => null);
   if (st?.qr) $('qrbox').innerHTML = `<img src="${st.qr}" alt="登录二维码">`;
