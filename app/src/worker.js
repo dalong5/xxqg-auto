@@ -25,6 +25,14 @@ const tryUnseal = (blob) => {
 };
 
 /**
+ * 风控/登录失效判定：这类错误继续跑别的任务只会加重风险，必须立刻停。
+ * 普通任务失败（积分没达标、页面异常）则允许继续后面的任务。
+ */
+const SAFETY_STOP =
+  /\b(?:401|403|429)\b|captcha|slider|risk|security.?check|too many requests|rate.?limit|unauthorized|forbidden|验证|风控|账号异常|访问异常|登录.*失效|cookie.*失效|请求被拒绝/i;
+const isSafetyStop = (message) => SAFETY_STOP.test(String(message || ''));
+
+/**
  * 取账号 cookie。解密失败时从最近的登录会话恢复并重新加密。
  * 这样换过 APP_SECRET、密钥文件被覆盖之后，用户不用重扫码。
  */
@@ -171,6 +179,11 @@ const HANDLERS = {
       special: () => quiz('special', opts),
     };
 
+    // 单个任务失败不应拖垮整轮：普通失败记下来继续跑下一项，
+    // 只有风控/登录失效这类继续下去也没意义的错误才立刻中止。
+    const failures = [];
+    let succeeded = 0;
+
     for (const name of tasks) {
       if (opts.shouldStop()) {
         throw new Error('超出时长预算，任务尚未完成');
@@ -180,10 +193,15 @@ const HANDLERS = {
       try {
         const msg = await runners[name]();
         log(job, `✔ ${taskName(name)}：${msg}`, 'ok');
+        succeeded++;
       } catch (e) {
         if (e.code === 'TASK_PAUSED') throw e;
-        log(job, `✘ ${taskName(name)} 失败：${userError(e.message || e)}`, 'bad');
-        throw e;
+        const reason = userError(e.message || e);
+        log(job, `✘ ${taskName(name)} 失败：${reason}`, 'bad');
+        // 风控/登录失效：继续跑别的只会加重风险，立即停
+        if (isSafetyStop(String(e.message || e))) throw e;
+        failures.push(`${taskName(name)}：${reason}`);
+        continue;
       }
       const latest = await score(jar);
       jobUser(job);
@@ -203,6 +221,8 @@ const HANDLERS = {
 
     const final = await patchScore(job);
     if (!final) throw new Error('最终积分回查失败，未确认任务完成');
+    if (succeeded === 0 && failures.length) throw new Error(`全部任务未完成：${failures.join('；')}`);
+    if (failures.length) log(job, `⚠ 部分任务未完成，其余已完成：${failures.join('；')}`, 'bad');
     db.addEvent(job.id, job.uid, 'done', final);
   },
 };
@@ -226,13 +246,14 @@ async function runTaskJob(job) {
     await HANDLERS[job.kind](job);
     if (db.finishJob(job.id)?.status === 'paused') log(job, '任务已暂停，可点击继续任务');
     console.log('[job] 完成 %s 用时 %ss', job.id.slice(0, 8), Math.round((Date.now() - startedAt) / 1000));
-  } catch (e) {    if (e.code === 'TASK_PAUSED') {
+  } catch (e) {
+    if (e.code === 'TASK_PAUSED') {
       if (db.finishPausedJob(job.id)?.status === 'paused') log(job, '任务已暂停，可点击继续任务');
       console.log('[job] 暂停 %s', job.id.slice(0, 8));
       return;
     }
     const message = String(e.message || e);
-    const safetyStop = /\b(?:401|403|429)\b|captcha|slider|risk|security.?check|too many requests|rate.?limit|unauthorized|forbidden|验证|风控|账号异常|访问异常|登录.*失效|cookie.*失效|请求被拒绝/i.test(message);
+    const safetyStop = isSafetyStop(message);
     // 登录彻底失效（401/cookie 失效）时给账号打标记，界面上提示重新扫码，避免反复空跑
     if (/\b401\b|登录.*失效|cookie.*失效|unauthorized/i.test(message) && job.uid) {
       db.markNeedsRescan(job.uid);
