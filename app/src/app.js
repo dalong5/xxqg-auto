@@ -240,8 +240,12 @@ app.get('/api/jobs/:id/events', (req, res) => {
 });
 
 app.get('/api/stats', (req, res) => {
-  const jobs = db.db.prepare('SELECT status, COUNT(*) n FROM jobs GROUP BY status').all();
-  res.json({ queued: db.queuedCount(), jobs, accounts: db.countUsers(req.visitor) });
+  // 只统计本访客自己的任务：以前是全表 GROUP BY，任何访客都能看到别人有多少队列/任务
+  const jobs = db.db
+    .prepare('SELECT status, COUNT(*) n FROM jobs WHERE visitor_id = ? GROUP BY status')
+    .all(req.visitor);
+  const queued = db.queuedCountFor(req.visitor);
+  res.json({ queued, jobs, accounts: db.countUsers(req.visitor) });
 });
 
 // 兜底错误中间件：任何路由抛错都转成 JSON 500，而不是让进程挂掉

@@ -9,6 +9,10 @@
  */
 import { db } from '../src/db.js';
 
+// API 进程一直在写库（心跳/事件），VACUUM 需要独占锁。
+// 不设 busy_timeout 的话，凌晨刚好有写入就会直接 SQLITE_BUSY 失败。
+db.exec('PRAGMA busy_timeout = 30000');
+
 const apply = process.argv.includes('--apply');
 const pageSize = db.prepare('pragma page_size').get().page_size;
 const pages = () => db.prepare('pragma page_count').get().page_count;
@@ -55,7 +59,14 @@ try {
 }
 console.log(`\n已删除：验证帧 ${removed.a}、过期事件 ${removed.b}、旧心跳 ${removed.c}`);
 
-db.exec('VACUUM');
+// VACUUM 失败不该静默：定时任务里看不到缩容就等于白跑
+try {
+  db.exec('VACUUM');
+} catch (e) {
+  console.error(`VACUUM 失败（库被占用？）：${e.message}`);
+  console.error('删除已完成，但文件没有收缩；下次清理会再试。');
+  process.exit(1);
+}
 // WAL 模式下 VACUUM 先把页写进 -wal，必须 checkpoint 才能真正缩小主库文件
 try {
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -64,3 +75,10 @@ try {
 }
 const after = { size: (pages() * pageSize) / 1048576, free: (free() * pageSize) / 1048576 };
 console.log(`库大小 ${before.size.toFixed(1)} MB → ${after.size.toFixed(1)} MB（空闲页 ${after.free.toFixed(1)} MB）`);
+// 顺带报告 WAL 大小：主库小了但 -wal 很大时磁盘占用其实没降
+try {
+  const { statSync } = await import('node:fs');
+  const { dataDir } = await import('../src/config.js');
+  const wal = statSync(`${dataDir}/app.db-wal`);
+  console.log(`WAL ${(wal.size / 1048576).toFixed(1)} MB`);
+} catch { /* 没有 wal 文件（已 checkpoint 或未启用 WAL）属正常 */ }

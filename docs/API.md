@@ -27,7 +27,8 @@
 | `POST /api/jobs/:id/resume` | 无 | `{jobId,status:"queued"}` | 404 无权限；409 尚未暂停或已结束 |
 | `GET /api/stats` | 无 | `{queued,jobs,accounts}` | — |
 
-`/api/stats` 的队列和任务分组统计是实例总量，账号数量是当前访客数量，不包含他人 UID 或任务内容。不要将它当作当前访客的任务明细。
+`/api/stats` 只统计**当前访客自己的**任务（`queued` 与 `jobs` 按 `visitor_id` 过滤），账号数量也是当前访客的，
+不包含他人 UID、任务数量或任务内容。早期版本返回的是实例总量，属于跨访客信息暴露，已修正。
 
 ## 账号与积分
 

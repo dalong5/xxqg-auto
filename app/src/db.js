@@ -310,6 +310,9 @@ export const stuckJobs = (workerId, silenceMs) =>
     )
     .all(workerId, now() - silenceMs);
 export const queuedCount = () => db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'").get().n;
+/** 某个访客自己排队的任务数（对外接口用，别把别人的队列数暴露出去） */
+export const queuedCountFor = (visitorId) =>
+  db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued' AND visitor_id = ?").get(visitorId).n;
 
 // ---------- worker 心跳 ----------
 export const beat = (workerId) =>
