@@ -259,20 +259,27 @@ function followJob(jobId, uid = user?.uid || '') {
   stream = es;
   es.onmessage = (e) => {
     if (stream !== es || (uid && user?.uid !== uid)) return;
-    const { type, payload } = JSON.parse(e.data);
-    if (['log', 'ok', 'bad', 'step'].includes(type)) log(payload.text, payload.text.startsWith('✔') ? 'ok' : payload.text.startsWith('✘') ? 'bad' : payload.text.startsWith('▶') ? 'step' : 'dim');
-    if (type === 'score' && user?.uid === uid) { user.last_score = payload; renderAccount(); }
-    if (type === 'verification') {
+    // 服务端帧可能因为脏数据变成 null/缺字段，别让一条坏帧打断整个日志流
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    const { type, payload } = msg || {};
+    const text = typeof payload?.text === 'string' ? payload.text : '';
+    if (['log', 'ok', 'bad', 'step'].includes(type) && text) {
+      log(text, text.startsWith('✔') ? 'ok' : text.startsWith('✘') ? 'bad' : text.startsWith('▶') ? 'step' : 'dim');
+    }
+    if (type === 'score' && user?.uid === uid && payload) { user.last_score = payload; renderAccount(); }
+    if (type === 'verification' && payload?.image) {
       verificationJob = jobId; verificationSize = payload;
       $('verification').hidden = false;
       image.src = `data:image/jpeg;base64,${payload.image}`;
     }
     if (type === 'verification-end') { $('verification').hidden = true; verificationJob = null; }
-    if (type === 'error') log(payload.error, 'bad');
+    if (type === 'error') log(payload?.error || '任务出错', 'bad');
   };
   es.addEventListener('end', e => {
     if (stream !== es || (uid && user?.uid !== uid)) return;
-    const result = JSON.parse(e.data);
+    let result = {};
+    try { result = JSON.parse(e.data) || {}; } catch { /* 收尾帧坏了也要停流 */ }
     log(result.status === 'paused' ? '任务已暂停，可点击继续任务' : result.status === 'done' ? '任务已完成' : `任务未完成：${result.error || '执行中断，请查看前面的提示'}`, result.status === 'done' ? 'ok' : result.status === 'paused' ? 'step' : 'bad');
     stopFollowing();
     load().catch(e => log(e.message, 'bad'));
