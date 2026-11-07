@@ -207,8 +207,9 @@ function renderAccount() {
   }
   const s = user.last_score || { today: '-', total: '-' };
   const exp = user.expires_at ? new Date(user.expires_at).toLocaleDateString('zh-CN') : '未知';
+  const rescan = Number(user.needs_rescan) ? '<div class="hint" style="color:#e0353b">⚠️ 登录已失效，请重新扫码绑定</div>' : '';
   $('acct').innerHTML = `<div class="acct"><b>${escapeHtml(user.nick || user.uid)}</b>
-    <span class="hint">预计登录有效至 ${exp}</span></div>
+    <span class="hint">预计登录有效至 ${exp}</span></div>${rescan}
     <div class="scores"><div><b>${s.today ?? '-'}</b><span>今日得分</span></div>
     <div><b>${s.total ?? '-'}</b><span>总积分</span></div></div>`;
   $('btnDel').hidden = false;

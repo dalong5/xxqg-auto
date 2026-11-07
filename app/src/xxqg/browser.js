@@ -213,6 +213,7 @@ export async function clearCaptcha(page) {
     // 过没过以「弹窗是否还可见」为准：这套皮肤通过后节点会残留一会儿，count() 会误判
     if (await captchaGone(page)) {
       console.log('[captcha] 自动通过（kind=%s，距离=%s，moved=%s）', solved.kind, Math.round(solved.distance), solved.moved);
+      db.clearVerificationFrames(job.jobId);
       return true;
     }
     console.log('[captcha] 合成拖动未被接受（kind=%s，距离=%s），改用真实鼠标重拖', solved.kind, Math.round(solved.distance));
@@ -226,6 +227,7 @@ export async function clearCaptcha(page) {
       await sleep(2000);
       if (await captchaGone(page)) {
         console.log('[captcha] 真实鼠标拖动通过（距离=%s）', Math.round(solved.distance));
+        db.clearVerificationFrames(job.jobId);
         return true;
       }
       console.log('[captcha] 真实鼠标拖动仍未被接受，转人工验证');
@@ -246,6 +248,8 @@ export async function clearCaptcha(page) {
       if (Date.now() - lastFrame > 1000) {
         const image = (await page.screenshot({ type: 'jpeg', quality: 65 })).toString('base64');
         db.addEvent(job.jobId, job.uid, 'verification', { image, ...page.viewportSize() });
+        // 只留最近 3 帧：人工验证最长 5 分钟，否则一次能堆几百帧、几十 MB
+        db.trimVerificationFrames(job.jobId, 3);
         lastFrame = Date.now();
       }
       const actions = db.db.prepare('SELECT * FROM verification_actions WHERE job_id = ? ORDER BY id LIMIT 100').all(job.jobId);

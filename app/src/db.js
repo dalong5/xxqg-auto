@@ -105,6 +105,8 @@ try {
   const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map(column => column.name));
   if (!userColumns.has('score_day')) db.exec('ALTER TABLE users ADD COLUMN score_day TEXT');
   if (!userColumns.has('login_generation')) db.exec('ALTER TABLE users ADD COLUMN login_generation INTEGER NOT NULL DEFAULT 0');
+  // 登录失效标记：401 后置 1，界面提示重新扫码；重新扫码成功时清零
+  if (!userColumns.has('needs_rescan')) db.exec('ALTER TABLE users ADD COLUMN needs_rescan INTEGER NOT NULL DEFAULT 0');
   db.exec('COMMIT');
 } catch (error) { db.exec('ROLLBACK'); throw error; }
 
@@ -157,6 +159,7 @@ export function upsertUser({ uid, visitorId, nick, jar, expiresAt }) {
          nick = excluded.nick,
          sealed_cookie = excluded.sealed_cookie,
          expires_at = excluded.expires_at,
+         needs_rescan = 0,
          login_generation = users.login_generation + 1`,
     ).run(uid, visitorId, nick, seal(typeof jar === 'string' ? JSON.parse(jar) : jar), expiresAt, now());
     db.prepare("UPDATE jobs SET status = 'failed', finished_at = ?, error = '账号归属已更新，原浏览器的暂停任务已停止' WHERE uid = ? AND visitor_id != ? AND status = 'paused'").run(now(), uid, visitorId);
@@ -172,10 +175,14 @@ export function upsertUser({ uid, visitorId, nick, jar, expiresAt }) {
 export const getUser = (uid) => db.prepare('SELECT * FROM users WHERE uid = ?').get(uid) || null;
 export const listUsers = (visitorId) =>
   db
-    .prepare("SELECT uid, nick, expires_at, created_at, last_run_at, CASE WHEN score_day = ? THEN last_score ELSE NULL END AS last_score, (SELECT id FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running','pausing','paused') LIMIT 1) AS active_job, (SELECT status FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running','pausing','paused') LIMIT 1) AS active_job_status FROM users WHERE visitor_id = ? ORDER BY created_at DESC")
+    .prepare("SELECT uid, nick, expires_at, needs_rescan, created_at, last_run_at, CASE WHEN score_day = ? THEN last_score ELSE NULL END AS last_score, (SELECT id FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running','pausing','paused') LIMIT 1) AS active_job, (SELECT status FROM jobs WHERE jobs.uid = users.uid AND status IN ('queued','running','pausing','paused') LIMIT 1) AS active_job_status FROM users WHERE visitor_id = ? ORDER BY created_at DESC")
     .all(today(), visitorId);
 export const countUsers = (visitorId) =>
   db.prepare('SELECT COUNT(*) AS n FROM users WHERE visitor_id = ?').get(visitorId).n;
+
+/** 401/失效：标记需要重新扫码，界面据此提示；重新扫码成功会清零 */
+export const markNeedsRescan = (uid, needing = 1) =>
+  db.prepare('UPDATE users SET needs_rescan = ? WHERE uid = ?').run(needing ? 1 : 0, uid);
 
 const today = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
 
@@ -322,3 +329,18 @@ export const eventsAfter = (jobId, after = 0) =>
   db.prepare('SELECT seq, type, payload, created_at FROM events WHERE job_id = ? AND seq > ? ORDER BY seq LIMIT 200').all(jobId, after);
 
 export const trimEvents = () => db.prepare('DELETE FROM events WHERE created_at < ?').run(now() - 24 * 3600_000);
+
+/**
+ * 验证码截图帧只在「人工验证进行中」有用，一次验证可能存上百帧（每帧几十 KB）。
+ * 自动通过后就删掉，避免数据库被截图撑大（本地库一度涨到 130MB+）。
+ */
+export const clearVerificationFrames = (jobId) =>
+  db.prepare("DELETE FROM events WHERE job_id = ? AND type IN ('verification','verification-end')").run(jobId);
+
+/** 人工验证进行中只保留最近 N 帧，避免一次验证堆出几十 MB */
+export const trimVerificationFrames = (jobId, keep = 3) =>
+  db
+    .prepare(
+      "DELETE FROM events WHERE job_id = ? AND type = 'verification' AND seq NOT IN (SELECT seq FROM events WHERE job_id = ? AND type = 'verification' ORDER BY seq DESC LIMIT ?)",
+    )
+    .run(jobId, jobId, keep);

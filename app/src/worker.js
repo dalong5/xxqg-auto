@@ -207,26 +207,39 @@ const HANDLERS = {
 };
 
 async function runTaskJob(job) {
-  db.addEvent(job.id, job.uid, 'start', { tasks: job.tasks ? JSON.parse(job.tasks) : [job.kind] });
+  const tasks = job.tasks ? JSON.parse(job.tasks) : [job.kind];
+  db.addEvent(job.id, job.uid, 'start', { tasks });
+  // 同时打到 stdout：docker logs 能直接看到任务起止，运维不用翻数据库
+  const startedAt = Date.now();
+  console.log('[job] 开始 %s %s (%s)', job.id.slice(0, 8), tasks.join('+'), job.uid || '-');
   const error = db.scheduledJobError(job);
   if (error) {
     db.failJob(job.id, error);
     db.addEvent(job.id, job.uid, 'error', { error });
+    console.log('[job] 拒绝 %s: %s', job.id.slice(0, 8), error);
     return;
   }
   try {
     await HANDLERS[job.kind](job);
     if (db.finishJob(job.id)?.status === 'paused') log(job, '任务已暂停，可点击继续任务');
+    console.log('[job] 完成 %s 用时 %ss', job.id.slice(0, 8), Math.round((Date.now() - startedAt) / 1000));
   } catch (e) {
     if (e.code === 'TASK_PAUSED') {
       if (db.finishPausedJob(job.id)?.status === 'paused') log(job, '任务已暂停，可点击继续任务');
+      console.log('[job] 暂停 %s', job.id.slice(0, 8));
       return;
     }
     const message = String(e.message || e);
     const safetyStop = /\b(?:401|403|429)\b|captcha|slider|risk|security.?check|too many requests|rate.?limit|unauthorized|forbidden|验证|风控|账号异常|访问异常|登录.*失效|cookie.*失效|请求被拒绝/i.test(message);
+    // 登录彻底失效（401/cookie 失效）时给账号打标记，界面上提示重新扫码，避免反复空跑
+    if (/\b401\b|登录.*失效|cookie.*失效|unauthorized/i.test(message) && job.uid) {
+      db.markNeedsRescan(job.uid);
+      console.log('[job] 账号 %s 登录失效，已标记需要重新扫码', job.uid);
+    }
     const retry = !safetyStop && db.getJob(job.id)?.status !== 'pausing' && job.attempts < 2 && /ECONN|timeout|ETIMEDOUT/i.test(message);
     db.failJob(job.id, e.message || e, retry);
     db.addEvent(job.id, job.uid, 'error', { error: userError(e.message || e) });
+    console.log('[job] 失败 %s %s%s', job.id.slice(0, 8), userError(message), retry ? '（稍后重试）' : '');
   }
 }
 

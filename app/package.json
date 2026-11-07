@@ -9,7 +9,9 @@
     "dev": "node scripts/dev.mjs",
     "api": "node src/server.js",
     "worker": "node src/worker.js",
-    "cli": "node bin/login-cli.js"
+    "cli": "node bin/login-cli.js",
+    "cleanup": "node scripts/cleanup-db.mjs",
+    "cleanup:apply": "node scripts/cleanup-db.mjs --apply"
   },
   "dependencies": {
     "express": "^4.21.2",
