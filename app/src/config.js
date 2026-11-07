@@ -30,23 +30,32 @@ function loadKey() {
 const key = loadKey();
 const keyFingerprint = crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
 
+/**
+ * 环境变量转正整数。写错（例如 MAX_ACCOUNTS=abc）时 Number() 会得到 NaN，
+ * 而 `count >= NaN` 恒为 false —— 账号上限会直接失效。所以非法值一律回落默认。
+ */
+export function positiveInt(raw, fallback, min = 1) {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= min ? Math.floor(n) : fallback;
+}
+
 export const config = {
   host: process.env.HOST || '127.0.0.1',
-  port: Number(process.env.PORT || 8099),
+  port: positiveInt(process.env.PORT, 8099),
   dataDir,
   key,
   keyFingerprint,
   // 并发上限：每个账号一个浏览器上下文，1 个上下文约 150~300MB
-  maxConcurrentTasks: Number(process.env.MAX_CONCURRENT || 2),
+  maxConcurrentTasks: positiveInt(process.env.MAX_CONCURRENT, 2),
   // 单个 worker 进程的任务并发 / 扫码并发（扫码只走 HTTP，可以开很大）
-  workerConcurrency: Number(process.env.WORKER_CONCURRENCY || 2),
-  loginConcurrency: Number(process.env.LOGIN_CONCURRENCY || 30),
+  workerConcurrency: positiveInt(process.env.WORKER_CONCURRENCY, 2),
+  loginConcurrency: positiveInt(process.env.LOGIN_CONCURRENCY, 30),
   // 每个访客最多挂几个账号（单机自用先给 1，开放注册时调大）
-  maxAccounts: Number(process.env.MAX_ACCOUNTS || 1),
+  maxAccounts: positiveInt(process.env.MAX_ACCOUNTS, 1),
   // 单篇材料停留秒数（页面自己按停留时长上报，太短计不上分）
-  dwellSeconds: Number(process.env.DWELL_SECONDS || 62),
+  dwellSeconds: positiveInt(process.env.DWELL_SECONDS, 62),
   // 任务总时长上限，防止跑飞
-  taskBudgetMs: Number(process.env.TASK_BUDGET_MS || 45 * 60 * 1000),
+  taskBudgetMs: positiveInt(process.env.TASK_BUDGET_MS, 45 * 60 * 1000),
   // 学习强国 PC 端身份
   ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
   appId: 'dingoankubyrfkttorhpou',

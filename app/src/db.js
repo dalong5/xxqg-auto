@@ -289,6 +289,12 @@ export const failJob = (id, error, retry = false, delayMs = 30_000) =>
         .run(String(error), now() + delayMs, id)
     : db.prepare('UPDATE jobs SET status = ?, error = ?, finished_at = ? WHERE id = ?').run('failed', String(error), now(), id);
 export const getJob = (id) => db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) || null;
+
+/** 找某人某类型的未结束任务（自检这类没有 uid 的任务靠它去重，避免被刷爆） */
+export const findActiveJob = (visitorId, kind) =>
+  db
+    .prepare("SELECT id, status FROM jobs WHERE visitor_id = ? AND kind = ? AND status IN ('queued','running','pausing','paused') ORDER BY created_at LIMIT 1")
+    .get(visitorId, kind) || null;
 export const queuedCount = () => db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'").get().n;
 
 // ---------- worker 心跳 ----------

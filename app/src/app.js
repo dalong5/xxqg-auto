@@ -16,6 +16,12 @@ function eventMessage(event) {
 
 const app = express();
 app.set('trust proxy', 'loopback');
+
+/**
+ * Express 4 不会捕获 async 处理器抛出的异常，未处理的 Promise rejection 在 Node 24
+ * 默认会让进程退出。统一包一层，把错误交给错误中间件，避免一个坏二维码打挂整个 API。
+ */
+const asyncRoute = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 app.use(express.json());
 app.use(express.static(path.join(process.cwd(), 'public')));
 app.get('/favicon.ico', (req, res) => res.status(204).end());
@@ -45,7 +51,7 @@ app.post('/api/login/start', (req, res) => {
   res.json({ sid: row.sid });
 });
 
-app.get('/api/login/:sid', async (req, res) => {
+app.get('/api/login/:sid', asyncRoute(async (req, res) => {
   const row = db.getLogin(req.params.sid);
   if (!row || row.visitor_id !== req.visitor) return res.status(404).json({ error: '会话不存在' });
   const body = { status: row.status, error: row.error ? userError(row.error) : null, uid: row.uid };
@@ -53,7 +59,7 @@ app.get('/api/login/:sid', async (req, res) => {
     body.qr = await QRCode.toDataURL(qrContent(row.code), { width: 220, margin: 1 });
   }
   res.json(body);
-});
+}));
 
 // 登录事件流（SSE）：二维码轮换、成功、失败
 app.get('/api/login/:sid/events', (req, res) => {
@@ -153,7 +159,14 @@ app.post('/api/jobs/:id/verification', (req, res) => {
 });
 
 // 没有账号也能跑的自检任务
+// 注意：自检没有 uid，enqueue 的去重逻辑不生效，必须在这里按访客去重 + 限流，
+// 否则一个访客可以无限入队，每次都拉起一个浏览器，直接把机器内存打满。
 app.post('/api/selftest', (req, res) => {
+  if (!rateLimit(`selftest:${req.visitor}`, 3, 300_000)) {
+    return res.status(429).json({ error: '自检太频繁，请 5 分钟后再试' });
+  }
+  const active = db.findActiveJob(req.visitor, 'selftest');
+  if (active) return res.json({ jobId: active.id, status: active.status, reused: true });
   const id = db.enqueue({ kind: 'selftest', visitorId: req.visitor });
   res.json({ jobId: id });
 });
@@ -203,6 +216,13 @@ app.get('/api/jobs/:id/events', (req, res) => {
 app.get('/api/stats', (req, res) => {
   const jobs = db.db.prepare('SELECT status, COUNT(*) n FROM jobs GROUP BY status').all();
   res.json({ queued: db.queuedCount(), jobs, accounts: db.countUsers(req.visitor) });
+});
+
+// 兜底错误中间件：任何路由抛错都转成 JSON 500，而不是让进程挂掉
+app.use((err, req, res, next) => {  // eslint-disable-line no-unused-vars
+  console.error('[api] %s %s 出错：%s', req.method, req.originalUrl, err?.stack || err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: '服务内部错误，请稍后重试' });
 });
 
 export default app;

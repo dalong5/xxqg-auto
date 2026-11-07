@@ -36,6 +36,12 @@ export function ensureVisitor(req, res) {
 
 /** 极简内存限流：单实例够用，多实例换 Redis */
 const hits = new Map();
+const MAX_KEYS = 2000;
+
+/**
+ * 限流。注意 key 会随访客/IP 增加，必须清理过期项，
+ * 否则进程跑久了这个 Map 只增不减（内存泄漏）。
+ */
 export function rateLimit(key, limit, windowMs) {
   const now = Date.now();
   const list = (hits.get(key) || []).filter((t) => now - t < windowMs);
@@ -45,5 +51,22 @@ export function rateLimit(key, limit, windowMs) {
   }
   list.push(now);
   hits.set(key, list);
+
+  if (hits.size > MAX_KEYS) {
+    for (const [k, v] of hits) {
+      if (!v.length || now - v[v.length - 1] >= windowMs) hits.delete(k);
+    }
+    // 极端情况下（全是活跃 key）直接丢最老的一半，保证内存有界
+    if (hits.size > MAX_KEYS) {
+      let drop = Math.floor(hits.size / 2);
+      for (const k of hits.keys()) {
+        if (drop-- <= 0) break;
+        hits.delete(k);
+      }
+    }
+  }
   return true;
 }
+
+/** 测试/运维用：当前限流表大小 */
+export const rateLimitSize = () => hits.size;
