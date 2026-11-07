@@ -169,6 +169,40 @@ async function fillEmptyBlanks(page) {
 }
 
 /**
+ * 点选填空：从剩余答案文本里挑一个词块。
+ * 优先「剩余文本以该词块开头」的最长匹配；否则退化为「包含」，
+ * 并且必须把匹配到的**那一段**从 rest 里删掉（按前缀长度截断会错位）。
+ * @returns {{index:number, rest:string}} index = -1 表示没匹配上
+ */
+export function pickChip(rest, chipTexts, used = new Set()) {
+  if (!rest) return { index: -1, rest };
+  let pick = -1;
+  let best = 0;
+  chipTexts.forEach((text, idx) => {
+    if (!text || used.has(idx) || text.length <= best) return;
+    if (rest.startsWith(text)) {
+      pick = idx;
+      best = text.length;
+    }
+  });
+  if (pick >= 0) return { index: pick, rest: rest.slice(best) };
+
+  // 退化匹配：取在剩余文本里出现位置最靠前的词块，消费掉该子串本身
+  let posBest = Infinity;
+  chipTexts.forEach((text, idx) => {
+    if (!text || used.has(idx)) return;
+    const pos = rest.indexOf(text);
+    if (pos >= 0 && pos < posBest) {
+      posBest = pos;
+      pick = idx;
+    }
+  });
+  if (pick < 0) return { index: -1, rest };
+  const text = chipTexts[pick];
+  return { index: pick, rest: rest.slice(0, posBest) + rest.slice(posBest + text.length) };
+}
+
+/**
  * 答题：题目页自带「查看提示」，提示里就是答案。
  * 这是官方答案源，比外部题库稳，不用维护答案表。
  */
@@ -249,28 +283,14 @@ export async function quiz(kind, { jar, progress, uid, jobId, shouldStop }) {
           await safeClick(page, blanks.nth(i));
           await page.waitForTimeout(180 + Math.floor(Math.random() * 220));
           if (!rest) continue;
-          let pick = -1;
-          let best = 0;
-          chipTexts.forEach((text, idx) => {
-            if (!text || used.has(idx) || text.length <= best) return;
-            if (rest.startsWith(text)) {
-              pick = idx;
-              best = text.length;
-            }
-          });
-          if (pick < 0) {
-            chipTexts.forEach((text, idx) => {
-              if (!text || used.has(idx) || pick >= 0) return;
-              if (rest.includes(text)) pick = idx;
-            });
-          }
-          if (pick < 0) {
+          const picked = pickChip(rest, chipTexts, used);
+          if (picked.index < 0) {
             log(`词块没匹配上：${rest.slice(0, 8)}`);
             continue;
           }
-          used.add(pick);
-          await safeClick(page, chips.nth(pick));
-          rest = rest.slice(chipTexts[pick].length);
+          used.add(picked.index);
+          await safeClick(page, chips.nth(picked.index));
+          rest = picked.rest;
           await page.waitForTimeout(280 + Math.floor(Math.random() * 320));
         }
       } else if (category.includes('填空')) {
