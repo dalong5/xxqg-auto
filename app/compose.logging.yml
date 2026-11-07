@@ -1,0 +1,23 @@
+# 日志轮转：docker 默认 json-file 不限制大小，长期运行会把磁盘写满。
+# 作为覆盖文件使用（deploy.sh 会自动带上）：
+#   docker compose -f docker-compose.yml -f compose.server.yml -f compose.instance.yml \
+#                  -f compose.logging.yml -f compose.xvfb.yml up -d
+services:
+  api:
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+  worker:
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+  worker-bulk:
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

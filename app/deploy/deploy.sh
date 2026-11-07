@@ -30,6 +30,11 @@ fi
 if [ "$XVFB_ACTIVE" = "1" ]; then
   COMPOSE_FILES+=(-f "$APP_DIR/compose.xvfb.yml")
 fi
+# 日志轮转覆盖（存在就带上，否则容器日志会无限增长写满磁盘）
+if [ -f "$APP_DIR/compose.logging.yml" ]; then
+  COMPOSE_FILES+=(-f "$APP_DIR/compose.logging.yml")
+  echo "已启用日志轮转：compose.logging.yml"
+fi
 
 log() { printf '\n== %s ==\n' "$*"; }
 
@@ -39,10 +44,12 @@ command -v docker >/dev/null || { echo "docker 不存在"; exit 2; }
 [ -d "$REL_DIR/app" ] || { echo "找不到 $REL_DIR/app（解包目录不对？）"; exit 2; }
 docker volume inspect "$DATA_VOL" >/dev/null || { echo "数据卷 $DATA_VOL 不存在"; exit 2; }
 
-log "1. 备份数据库与密钥（卷内 backups/）"
+log "1. 备份数据库与密钥（卷内 backups/，数据库直接压缩省磁盘）"
 docker run --rm -v "$DATA_VOL:/data" -v "$REL_DIR/backup:/backup" alpine:3 sh -c \
-  "mkdir -p /backup && cp -a /data/app.db /data/secret.key /backup/ 2>/dev/null; \
-   [ -d /data/profiles ] && tar czf /backup/profiles.tgz -C /data profiles || true; ls -l /backup"
+  "mkdir -p /backup && cp -a /data/app.db /backup/app.db 2>/dev/null && gzip -9 /backup/app.db; \
+   cp -a /data/secret.key /backup/ 2>/dev/null; \
+   [ -d /data/profiles ] && tar czf /backup/profiles.tgz -C /data profiles || true; ls -lh /backup"
+# 恢复时：gunzip /backup/app.db.gz（WAL 模式下先停容器再覆盖）
 
 log "2. 给当前镜像打回滚标签"
 for img in xxqg-api xxqg-worker; do
@@ -86,11 +93,15 @@ fi
 log "7. 公网自检"
 curl -fsS -o /dev/null -w 'https=%{http_code}\n' https://1.14.105.129/ || echo "公网检查失败（可能证书/网关）"
 
+log "8. 清理悬空镜像（不动 latest / 回滚标签）"
+docker image prune -f 2>&1 | tail -1
+
 cat <<EOF
 
 部署完成：$VER
-如需回滚：
-  docker tag xxqg-api:pre-$VER xxqg-api:latest && docker tag xxqg-worker:pre-$VER xxqg-worker:latest
+如需回滚（pre-$VER 镜像标签；若已缺失，用发布包源码重建）：
+  cd $APP_DIR && docker compose ${COMPOSE_FILES[*]} --project-name $PROJECT build
+  或：docker tag xxqg-api:pre-$VER xxqg-api:latest && docker tag xxqg-worker:pre-$VER xxqg-worker:latest
   cd $APP_DIR && docker compose ${COMPOSE_FILES[*]} --project-name $PROJECT up -d --no-build
   数据库/密钥备份在卷内 backups/${VER}/，不要用旧库覆盖新积分。
 EOF

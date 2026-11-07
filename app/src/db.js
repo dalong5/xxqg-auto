@@ -278,10 +278,16 @@ export const resumeJob = (id, visitorId) =>
     WHERE id = ? AND kind = 'run' AND status = 'paused'
       AND visitor_id = ? AND EXISTS (SELECT 1 FROM users WHERE uid = jobs.uid AND visitor_id = ?)
     RETURNING status`).get(id, visitorId, visitorId);
-export const failJob = (id, error, retry = false) =>
+/**
+ * 失败处理。retry=true 时重新排队，但把 created_at 推到未来，
+ * 领取逻辑按 created_at 排序，天然形成「退避 30 秒」，避免瞬时重试打爆接口。
+ */
+export const failJob = (id, error, retry = false, delayMs = 30_000) =>
   retry
-    ? db.prepare("UPDATE jobs SET status = 'queued', error = ?, started_at = NULL WHERE id = ?").run(String(error), id)
-    : db.prepare("UPDATE jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?").run(String(error), now(), id);
+    ? db
+        .prepare("UPDATE jobs SET status = 'queued', error = ?, started_at = NULL, worker = NULL, created_at = ? WHERE id = ?")
+        .run(String(error), now() + delayMs, id)
+    : db.prepare('UPDATE jobs SET status = ?, error = ?, finished_at = ? WHERE id = ?').run('failed', String(error), now(), id);
 export const getJob = (id) => db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) || null;
 export const queuedCount = () => db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'").get().n;
 
