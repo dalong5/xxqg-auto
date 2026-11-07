@@ -27,8 +27,10 @@ export async function driveLogin(sid) {
   let rotations = 0;
 
   try {
-    const state = await getSign(jar);
-    let code = await newQrCode(jar);
+    // 建码这几步同样只对网络抖动重试：一次失败就让用户重扫码太亏
+    const retry = (fn) => retryTransient(fn, { tries: 3, delayMs: 900 });
+    const state = await retry(() => getSign(jar));
+    let code = await retry(() => newQrCode(jar));
     updateLogin(sid, { status: 'waiting', state, code, jar: JSON.stringify(jar.toJSON()) });
     emit('qr', { code });
 
@@ -38,7 +40,7 @@ export async function driveLogin(sid) {
       if (!current || current.status === 'failed') return;
 
       // 轮询遇到网络抖动就重试几次，不要直接判整个登录失败（用户又得重扫码）
-      const r = await retryTransient(() => pollQr(jar, current.code, state), { tries: 3, delayMs: 900 });
+      const r = await retry(() => pollQr(jar, current.code, state));
       if (r.status === 'expired') {
         rotations++;
         if (rotations > 4) {
@@ -46,15 +48,17 @@ export async function driveLogin(sid) {
           emit('failed', { error: '二维码反复过期' });
           return;
         }
-        code = await newQrCode(jar);
+        code = await retry(() => newQrCode(jar));
         updateLogin(sid, { code });
         emit('qr', { code });
         continue;
       }
 
       if (r.status === 'scanned') {
-        await secureCheck(jar, r.tmpCode, state);
-        const user = await userInfo(jar);
+        await retry(() => secureCheck(jar, r.tmpCode, state));
+        const user = await retry(() => userInfo(jar));
+        // 注意：查分失败必须让登录失败，不能吞掉。
+        // 扫码后查分被拒通常意味着账号还在安全验证里，吞掉会把未验证的会话标成 ready。
         const progress = await score(jar);
         upsertUser({
           uid: user.uid,
