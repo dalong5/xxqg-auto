@@ -115,7 +115,16 @@ app.post('/api/users/:uid/sync', (req, res) => {
   const user = ownUser(req, res);
   if (!user) return;
   const active = activeJob(user.uid);
-  if (active) return res.json({ jobId: active.id, status: active.status, reused: true });
+  if (active) {
+    if (active.kind !== 'sync') {
+      return res.status(409).json({
+        error: `当前有「${TASK_NAMES[active.kind] || active.kind}」正在执行，等它结束后再查分`,
+        jobId: active.id,
+        status: active.status,
+      });
+    }
+    return res.json({ jobId: active.id, status: active.status, reused: true });
+  }
   const id = db.enqueue({ kind: 'sync', uid: user.uid, visitorId: req.visitor });
   res.json({ jobId: id });
 });

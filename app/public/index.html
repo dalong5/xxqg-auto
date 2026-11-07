@@ -292,7 +292,9 @@ async function run(tasks) {
     user.active_job_status = d.status || 'queued';
     renderAccount();
     if (d.status === 'paused') return log('当前任务已暂停，请点击继续任务', 'step');
-    log(`已入队：${tasks.map(task => taskNames[task] || '学习任务').join(' / ')}（队列 ${d.queued}）`, 'step');
+    // 复用已有任务时，服务端会返回真实在跑的 tasks，别拿本次请求的糊弄用户
+    const actual = Array.isArray(d.tasks) && d.tasks.length ? d.tasks : tasks;
+    log(`已入队：${actual.map(task => taskNames[task] || '学习任务').join(' / ')}（队列 ${d.queued}）`, 'step');
     followJob(d.jobId);
   } catch (e) { log(e.message, 'bad'); }
 }
@@ -307,6 +309,7 @@ async function refresh() {
     user.active_job_status = d.status || 'queued';
     renderAccount();
     if (d.status === 'paused') return log('当前任务已暂停，请点击继续任务', 'step');
+    log('正在查询积分…', 'step');
     followJob(d.jobId);
   } catch (e) { log(e.message, 'bad'); }
 }

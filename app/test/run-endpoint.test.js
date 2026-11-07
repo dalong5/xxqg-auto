@@ -47,6 +47,23 @@ test('有同步任务在跑时，启动跑任务返回 409 并说明原因', asy
   }
 });
 
+test('有跑任务在跑时，查分接口返回 409 而不是混进任务队列', async () => {
+  const { server, base, visitor, cookie } = await setup();
+  try {
+    addUser(visitor, 'u-sync-1');
+    db.enqueue({ kind: 'run', uid: 'u-sync-1', visitorId: visitor, tasks: ['daily'] });
+    const jobId = db.db.prepare("SELECT id FROM jobs WHERE uid='u-sync-1' AND status='queued'").get().id;
+    db.db.prepare("UPDATE jobs SET status='running' WHERE id=?").run(jobId);
+
+    const res = await fetch(`${base}/api/users/u-sync-1/sync`, { method: 'POST', headers: { cookie } });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.match(body.error, /正在执行/);
+  } finally {
+    server.close();
+  }
+});
+
 test('已有同账号跑任务时复用，并返回真实的 tasks', async () => {
   const { server, base, visitor, cookie } = await setup();
   try {
