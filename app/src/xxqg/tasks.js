@@ -141,17 +141,35 @@ const EXAM_ENTRY = {
   special: { name: '专项答题', code: 4 },
 };
 
+/** 从提示弹层的 HTML 里抽取答案片段（官方把答案包在 <font> 里） */
+export function parseTips(html) {
+  return [...String(html || '').matchAll(/<font[^>]*>([\s\S]*?)<\/font>/g)]
+    .map((m) => m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
 /** 从「查看提示」的弹层里取答案：官方答案就包在 <font> 里 */
 async function readTips(page) {
   let tipBtn = page.locator('.tips').first();
-  if (!(await tipBtn.count())) tipBtn = page.locator('text=查看提示').first();
-  if (!(await tipBtn.count())) return [];
+  const usable = async (loc) => (await loc.count()) > 0 && (await loc.isVisible().catch(() => false));
+  if (!(await usable(tipBtn))) {
+    const alt = page.locator('text=查看提示').first();
+    if (!(await usable(alt))) return [];
+    tipBtn = alt;
+  }
   await safeClick(page, tipBtn);
-  await page.waitForTimeout(600 + Math.floor(Math.random() * 500));
-  const html = await page.locator('.ant-popover .line-feed').first().innerHTML().catch(() => '');
-  const tips = [...html.matchAll(/<font[^>]*>([\s\S]*?)<\/font>/g)]
-    .map((m) => m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
+  const pop = page.locator('.ant-popover .line-feed').first();
+  // 弹层有动画，等它真正出现再读，否则拿到空串 → 答案缺失 → 乱选
+  await pop.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(400 + Math.floor(Math.random() * 300));
+  let html = await pop.innerHTML().catch(() => '');
+  if (!html) {
+    // 第一次可能没点开，补点一次
+    await safeClick(page, tipBtn).catch(() => {});
+    await page.waitForTimeout(800);
+    html = await pop.innerHTML().catch(() => '');
+  }
+  const tips = parseTips(html);
   // 弹层会盖住下面的选项，必须关掉，否则后面的点击全被吞掉
   await page.keyboard.press('Escape').catch(() => {});
   await page.locator('.q-header').first().click({ timeout: 1500 }).catch(() => {});
