@@ -1,5 +1,6 @@
 import { db, getLogin, updateLogin, upsertUser, setUserScore, addEvent } from './db.js';
 import { Jar, getSign, newQrCode, pollQr, secureCheck, userInfo, score } from './xxqg/client.js';
+import { retryTransient } from './util.js';
 
 /**
  * 从队列领取一个待登录会话并跑到结束。
@@ -36,7 +37,8 @@ export async function driveLogin(sid) {
       const current = getLogin(sid);
       if (!current || current.status === 'failed') return;
 
-      const r = await pollQr(jar, current.code, state);
+      // 轮询遇到网络抖动就重试几次，不要直接判整个登录失败（用户又得重扫码）
+      const r = await retryTransient(() => pollQr(jar, current.code, state), { tries: 3, delayMs: 900 });
       if (r.status === 'expired') {
         rotations++;
         if (rotations > 4) {
