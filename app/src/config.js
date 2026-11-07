@@ -54,6 +54,11 @@ export const config = {
   // 注意 db.deleteStaleLogins 的过期阈值必须比 total 更长，否则用户还在扫就被判过期。
   loginScanPerCodeMs: positiveInt(process.env.LOGIN_SCAN_PER_CODE_MS, 150_000),
   loginScanTotalMs: positiveInt(process.env.LOGIN_SCAN_TOTAL_MS, 300_000),
+  // 执行器侧的三个阈值。写错（=abc）会得到 NaN：
+  // 空闲关浏览器会变成「每次轮询都关」、看门狗会永远不触发、内存闸门会失效。
+  browserIdleCloseMs: positiveInt(process.env.BROWSER_IDLE_CLOSE_MS, 120_000),
+  watchdogSilenceMs: positiveInt(process.env.WATCHDOG_SILENCE_MS, 600_000),
+  workerMinFreeMb: positiveInt(process.env.WORKER_MIN_FREE_MB, 200),
   // 每个访客最多挂几个账号（单机自用先给 1，开放注册时调大）
   maxAccounts: positiveInt(process.env.MAX_ACCOUNTS, 1),
   // 单篇材料停留秒数（页面自己按停留时长上报，太短计不上分）

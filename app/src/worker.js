@@ -278,9 +278,9 @@ let stopping = false;
  * 空闲释放浏览器：一个 Chromium 常驻约 150–250MB，而任务是一阵一阵来的。
  * 空闲超过 BROWSER_IDLE_CLOSE_MS 就关掉，下一个任务来了再懒启动。
  */
-const IDLE_CLOSE_MS = Number(process.env.BROWSER_IDLE_CLOSE_MS ?? 120_000);
+const IDLE_CLOSE_MS = config.browserIdleCloseMs;
 // 看门狗阈值：正常情况下阅读/视听每 60 秒内必有一条进度日志，10 分钟沉默一定不正常
-const WATCHDOG_SILENCE_MS = Number(process.env.WATCHDOG_SILENCE_MS ?? 600_000);
+const WATCHDOG_SILENCE_MS = config.watchdogSilenceMs;
 let lastJobAt = Date.now();
 let browserClosed = false;
 
@@ -299,7 +299,7 @@ async function closeIfIdle() {
  * 已经在跑任务、且可用内存低于阈值时，暂缓领取新任务（不中断已在跑的）。
  * /proc/meminfo 在容器里通常反映宿主机内存，正好是我们想保护的量。
  */
-const MIN_FREE_MB = Number(process.env.WORKER_MIN_FREE_MB ?? 200);
+const MIN_FREE_MB = config.workerMinFreeMb;
 let memGateLogged = 0;
 
 function availableMemMb() {
