@@ -18,6 +18,14 @@ export function claimLogin() {
   );
 }
 
+/**
+ * 扫码截止时间：每张码给 perCode，但整场最多 total。
+ * 换码时用同一个函数重算，避免「换个码就没时间扫了」，也避免「一直换码永不过期」。
+ */
+export function nextQrDeadline({ startedAt, now = Date.now(), perCode = 150_000, total = 300_000 }) {
+  return Math.min(startedAt + total, now + perCode);
+}
+
 export async function driveLogin(sid) {
   const row = getLogin(sid);
   if (!row) return;
@@ -34,7 +42,12 @@ export async function driveLogin(sid) {
     updateLogin(sid, { status: 'waiting', state, code, jar: JSON.stringify(jar.toJSON()) });
     emit('qr', { code });
 
-    const deadline = Date.now() + 150_000;
+    // 每张二维码给 150 秒，换码后重新计时；但整场扫码最多 5 分钟，
+    // 避免用户离开页面后会话一直挂着占名额。
+    const startedAt = Date.now();
+    const PER_CODE_MS = 150_000;
+    const TOTAL_MS = 300_000;
+    let deadline = nextQrDeadline({ startedAt, perCode: PER_CODE_MS, total: TOTAL_MS });
     while (Date.now() < deadline) {
       const current = getLogin(sid);
       if (!current || current.status === 'failed') return;
@@ -51,6 +64,8 @@ export async function driveLogin(sid) {
         code = await retry(() => newQrCode(jar));
         updateLogin(sid, { code });
         emit('qr', { code });
+        // 换的是新码，给它完整的时间；总时长仍受 5 分钟上限约束
+        deadline = nextQrDeadline({ startedAt, perCode: PER_CODE_MS, total: TOTAL_MS });
         continue;
       }
 
