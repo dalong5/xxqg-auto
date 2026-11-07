@@ -59,6 +59,28 @@ for img in xxqg-api xxqg-worker; do
   fi
 done
 
+log "2.5 等运行中的任务结束（重建容器会打断它，被打断的任务会重跑）"
+count_running() {
+  docker run --rm -v "$DATA_VOL:/data" alpine:3 sh -c \
+    'command -v sqlite3 >/dev/null 2>&1 || (apk add -q sqlite >/dev/null 2>&1); sqlite3 /data/app.db "select count(*) from jobs where status in (\"running\",\"pausing\")" 2>/dev/null || echo 0' | tr -dc '0-9'
+}
+WAIT_SECONDS="${WAIT_RUNNING_SECONDS:-600}"
+waited=0
+while :; do
+  running=$(count_running)
+  [ -z "$running" ] && running=0
+  if [ "$running" = "0" ]; then echo "没有运行中的任务，继续"; break; fi
+  if [ "${FORCE_DEPLOY:-0}" = "1" ]; then echo "有 $running 个任务在跑，FORCE_DEPLOY=1 强制继续"; break; fi
+  if [ "$waited" -ge "$WAIT_SECONDS" ]; then
+    echo "还有 $running 个任务在跑，等了 ${waited}s 仍未结束。"
+    echo "可以等任务自然结束再部署，或 FORCE_DEPLOY=1 强制打断（被打断的任务会从头重跑）。"
+    exit 4
+  fi
+  sleep 15
+  waited=$((waited + 15))
+  echo "有 $running 个任务在跑，已等 ${waited}s / ${WAIT_SECONDS}s"
+done
+
 log "3. 替换源码（保留 compose/data/.env）"
 tar czf "/opt/xxqg-auto/releases/${VER}/previous-source.tar.gz" -C "$APP_DIR" --exclude=data --exclude=node_modules . || true
 rsync -a --delete --exclude data --exclude node_modules --exclude .env \
