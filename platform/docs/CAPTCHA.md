@@ -178,6 +178,43 @@ PASS：OS 级输入到达页面并拖到终点
 
 Linux/Xvfb 支尚未在真实 Linux 上执行过（本机无 WSL/Docker），脚本已就绪，服务器上一条命令即可验证。
 
+## 11. 真实站点自动通过（2026-11-08 已验证）
+
+本地 Windows 环境（有头 Chrome + SendInput）跑每日答题，出现滑块后**一次拖动即通过**：
+
+```
+[captcha-solve] {"step":"detect","kind":"slide-to-end"}
+[captcha-solve] {"step":"plan","kind":"slide-to-end","trackW":358,"handleW":40,"distance":321}
+[captcha-solve] {"step":"attempt","n":1,"moved":150,"passed":true,"closed":false,"hint":"x 验证通过!"}
+[captcha]       自动通过（kind=slide-to-end，距离=321，moved=150）
+任务结果        ✔ 每日答题：已确认计分 5/5（今日 7 分）
+```
+
+### 真实 DOM 结构（这套皮肤）
+
+```
+div#JS_aliyun-captcha-main                 [439,317 374x174]   整个弹窗
+  div#JS_aliyun-captcha-logo-wrapper       [447,325 358x106]   红色横幅
+  img#JS_aliyun-captcha-image              [570,353 113x50]    横幅里的 logo
+  div#JS_aliyun-captcha-close-btn          [775,325 30x30]     右上角 ×（不要当手柄）
+  div#JS_aliyun-captcha-slider_bind_element[447,439 358x0]     滑轨容器（高度 0，子元素溢出）
+```
+
+手柄是滑轨内部靠左的小方块（约 40x40）。**没有** `#aliyunCaptcha-sliding-slider` 这类 id，
+按 class/id 找会失败——这是之前自动解码一直不生效的根本原因。
+
+### 两个已修复的坑
+
+| 坑 | 表现 | 修复 |
+| --- | --- | --- |
+| 手柄选错 | 退回「按几何猜」后把**关闭按钮 ×**（30x30）当手柄，距离算成 **21px**（应为 321px） | 按真实结构测量：滑轨 = `#JS_aliyun-captcha-slider_bind_element`，手柄 = 滑轨内靠左小方块 |
+| 成功误判 | 弹窗通过后节点残留淡出，`count()` 仍 > 0 → 判定失败 → 继续拖，把已通过的手柄拖乱 | 三条件验收：页面出现「验证通过」／弹窗不可见／手柄位移 > 60%，任一成立即成功 |
+
+### 失败策略
+
+- 手柄**没动**（moved ≈ 0）：说明按下点没落在滑块上 → 允许重试（最多 3 次）；
+- 手柄**动了但没过**：判定为风控拒绝 → **立即停手**转人工，不刷风险分。
+
 ---
 
 解码只解决「拖到哪儿」，不解决「这次请求是否被判定为自动化」。历史实测：
