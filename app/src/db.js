@@ -112,6 +112,19 @@ try {
 
 const now = () => Date.now();
 
+/**
+ * 把「已判定登录失效但还留着 cookie」的历史账号补一次自动退出。
+ * 旧版本只在界面上打标记、不清凭证，这批账号会一直拿废 cookie 撞接口。
+ * 幂等：清完之后 sealed_cookie 为空，不会再命中。
+ */
+export const logoutInvalidUsers = () =>
+  db
+    .prepare("UPDATE users SET sealed_cookie = '', login_generation = login_generation + 1 WHERE needs_rescan = 1 AND sealed_cookie != ''")
+    .run().changes;
+
+// 启动即执行一次，历史数据也能立刻进入「已退出登录」状态
+logoutInvalidUsers();
+
 // ---------- 访客会话（多人同时用，各自只看自己的账号） ----------
 export function touchVisitor(id) {
   db.prepare('INSERT OR IGNORE INTO visitors (id, created_at) VALUES (?, ?)').run(id, now());

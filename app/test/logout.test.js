@@ -92,3 +92,16 @@ test('重新扫码后自动恢复：标记清零、可以再跑任务', async ()
     server.close();
   }
 });
+
+test('启动时会把「已标记失效但还留着 cookie」的历史账号补做退出登录（幂等）', async () => {
+  const fresh = await import('../src/db.js');
+  fresh.touchVisitor('v-legacy');
+  fresh.upsertUser({ uid: 'legacy-bad', visitorId: 'v-legacy', nick: '旧', jar: JSON.stringify({ token: 'x' }), expiresAt: 0 });
+  fresh.markNeedsRescan('legacy-bad');
+  assert.ok(fresh.getUser('legacy-bad').sealed_cookie, '前置：还留有 cookie');
+
+  const changed = fresh.logoutInvalidUsers();
+  assert.ok(changed >= 1, `应至少清理 1 个账号，实际 ${changed}`);
+  assert.equal(fresh.getUser('legacy-bad').sealed_cookie, '');
+  assert.equal(fresh.logoutInvalidUsers(), 0, '再次执行应为空操作（幂等）');
+});
