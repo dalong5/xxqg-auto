@@ -254,10 +254,12 @@ async function runTaskJob(job) {
     }
     const message = String(e.message || e);
     const safetyStop = isSafetyStop(message);
-    // 登录彻底失效（401/cookie 失效）时给账号打标记，界面上提示重新扫码，避免反复空跑
+    // 登录彻底失效（401/cookie 失效）：自动退出登录。
+    // 清掉 cookie 避免继续拿旧凭证撞接口，同时在界面上提示重新扫码。
     if (/\b401\b|登录.*失效|cookie.*失效|unauthorized/i.test(message) && job.uid) {
-      db.markNeedsRescan(job.uid);
-      console.log('[job] 账号 %s 登录失效，已标记需要重新扫码', job.uid);
+      db.logoutUser(job.uid);
+      db.addEvent(job.id, job.uid, 'log', { text: '登录已失效，已自动退出该账号，请重新扫码' });
+      console.log('[job] 账号 %s 登录失效，已自动退出登录', job.uid);
     }
     const retry = !safetyStop && db.getJob(job.id)?.status !== 'pausing' && job.attempts < 2 && /ECONN|timeout|ETIMEDOUT/i.test(message);
     db.failJob(job.id, e.message || e, retry);

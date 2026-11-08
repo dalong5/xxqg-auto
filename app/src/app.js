@@ -114,6 +114,7 @@ function activeJob(uid) {
 app.post('/api/users/:uid/sync', (req, res) => {
   const user = ownUser(req, res);
   if (!user) return;
+  if (db.isLoggedOut(user)) return res.status(409).json({ error: '该账号登录已失效，已自动退出，请重新扫码后再查分' });
   const active = activeJob(user.uid);
   if (active) {
     if (active.kind !== 'sync') {
@@ -133,6 +134,7 @@ app.post('/api/users/:uid/sync', (req, res) => {
 app.post('/api/users/:uid/run', (req, res) => {
   const user = ownUser(req, res);
   if (!user) return;
+  if (db.isLoggedOut(user)) return res.status(409).json({ error: '该账号登录已失效，已自动退出，请重新扫码后再运行' });
   const asked = Array.isArray(req.body?.tasks) && req.body.tasks.length ? req.body.tasks : ['login', 'article', 'video', 'daily'];
   const tasks = asked.filter((t) => ['login', 'article', 'video', 'daily', 'weekly', 'special'].includes(t));
   if (!tasks.length || tasks.length !== asked.length) return res.status(400).json({ error: '任务类型无效' });

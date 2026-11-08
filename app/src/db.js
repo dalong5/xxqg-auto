@@ -187,6 +187,20 @@ export const countUsers = (visitorId) =>
 export const markNeedsRescan = (uid, needing = 1) =>
   db.prepare('UPDATE users SET needs_rescan = ? WHERE uid = ?').run(needing ? 1 : 0, uid);
 
+/**
+ * 登录已失效 → 自动退出登录。
+ * 清掉保存的 cookie（不再拿旧凭证反复撞接口）并标记需重新扫码；
+ * 账号记录保留，重新扫码即可恢复，不用重新添加。
+ * login_generation +1 让旧凭证发起的在途任务立刻失效。
+ */
+export const logoutUser = (uid) =>
+  db
+    .prepare("UPDATE users SET sealed_cookie = '', needs_rescan = 1, login_generation = login_generation + 1 WHERE uid = ?")
+    .run(uid);
+
+/** 是否处于「已自动退出登录」状态：没有任何可用的 cookie */
+export const isLoggedOut = (user) => !!user && !user.sealed_cookie;
+
 const today = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
 
 /** 当天分数只增不减：并发的旧快照不能把新分数冲掉 */
